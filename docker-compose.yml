@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: keremet-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keremet_hotel
+      POSTGRES_USER: keremet
+      POSTGRES_PASSWORD: keremet_local_123
+    ports:
+      - "5433:5432"
+    volumes:
+      - keremet_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keremet -d keremet_hotel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  keremet_postgres_data:

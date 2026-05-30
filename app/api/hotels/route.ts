@@ -1,0 +1,320 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { prisma } from '@/lib/db';
+import { getCountryConfig } from '@/lib/country';
+import { sanitizeExtranetNames } from '@/lib/stays';
+import { getSessionUser } from '@/lib/server/session';
+import { getCountryFromRequest } from '@/lib/server/request-country';
+import { parseDateOnly, parseInputValue } from '@/lib/timezone';
+import { assertAdmin } from '@/lib/permissions';
+import { handleApiError } from '@/lib/server/errors';
+import { LedgerEntryType, PaymentMethod, Prisma, RoomStatus, ShiftStatus } from '@prisma/client';
+import { isCollectionLedgerEntry } from '@/lib/ledger';
+
+export const dynamic = 'force-dynamic';
+
+const cleaningChatIdSchema = z
+    .string()
+    .trim()
+    .regex(/^-?\d+$/, { message: 'ID чата должен содержать только цифры и, при необходимости, знак -' })
+    .min(5)
+    .max(32);
+
+const createHotelSchema = z.object({
+    name: z.string().min(2),
+    address: z.string().min(4),
+    country: z.literal('KZ').optional(),
+    timezone: z.string().min(1).max(50).optional(),
+    currency: z.string().min(1).max(10).optional(),
+    usesExtranets: z.boolean().optional(),
+    extranetNames: z.array(z.string().trim().min(1).max(60)).max(30).optional(),
+    financialCycleStartDay: z.number().int().min(1).max(31).optional(),
+    managerSharePct: z.number().int().min(0).max(100).optional(),
+    monthlyPayrollCost: z.number().int().min(0).optional(),
+    monthlyRentCost: z.number().int().min(0).optional(),
+    monthlyUtilitiesCost: z.number().int().min(0).optional(),
+    monthlySuppliesCost: z.number().int().min(0).optional(),
+    monthlyOtherCost: z.number().int().min(0).optional(),
+    notes: z.string().max(500).optional(),
+    cleaningChatId: cleaningChatIdSchema.optional().nullable()
+});
+
+export async function GET(request: NextRequest) {
+    try {
+        const session = await getSessionUser(request);
+        assertAdmin(session);
+
+        const country = getCountryFromRequest(request);
+        const countryConfig = getCountryConfig(country);
+        const { searchParams } = new URL(request.url);
+
+        const parseIds = (key: string) => {
+            return searchParams
+                .getAll(key)
+                .flatMap((value) => value.split(','))
+                .map((value) => value.trim())
+                .filter(Boolean);
+        };
+
+        const hotelIds = parseIds('hotelId');
+        const managerIds = parseIds('managerId');
+        const startDate = parseInputValue(searchParams.get('startAt'), countryConfig.timezone)
+            ?? parseDateOnly(searchParams.get('startDate'), false, countryConfig.timezone);
+        const endDate = parseInputValue(searchParams.get('endAt'), countryConfig.timezone)
+            ?? parseDateOnly(searchParams.get('endDate'), true, countryConfig.timezone);
+
+        const hotelWhere: Prisma.HotelWhereInput = {
+            country,
+            ...(hotelIds.length ? { id: { in: hotelIds } } : {}),
+        };
+
+        const ledgerWhere: Prisma.CashEntryWhereInput = {
+            hotel: { country },
+            ...(hotelIds.length ? { hotelId: { in: hotelIds } } : {}),
+            ...(managerIds.length ? { managerId: { in: managerIds } } : {}),
+            ...((startDate || endDate)
+                ? {
+                    recordedAt: {
+                        ...(startDate ? { gte: startDate } : {}),
+                        ...(endDate ? { lte: endDate } : {}),
+                    },
+                }
+                : {}),
+        };
+
+        const [hotels, ledgerGroups, collectionEntries, recentExpenseEntries] = await Promise.all([
+            prisma.hotel.findMany({
+                where: hotelWhere,
+                include: {
+                    rooms: true,
+                    shifts: {
+                        where: { status: ShiftStatus.OPEN },
+                        orderBy: { openedAt: 'desc' },
+                        take: 1,
+                        include: {
+                            manager: true
+                        }
+                    },
+                    assignments: {
+                        where: { isActive: true },
+                        include: { user: true }
+                    }
+                }
+            }),
+            prisma.cashEntry.groupBy({
+                by: ['hotelId', 'entryType', 'method'],
+                _sum: { amount: true },
+                where: ledgerWhere
+            }),
+            prisma.cashEntry.findMany({
+                where: {
+                    ...ledgerWhere,
+                    entryType: LedgerEntryType.CASH_OUT,
+                },
+                select: {
+                    hotelId: true,
+                    amount: true,
+                    method: true,
+                    note: true,
+                    entryType: true,
+                    expenseCategory: {
+                        select: { name: true },
+                    },
+                },
+            }),
+            prisma.cashEntry.findMany({
+                where: {
+                    ...ledgerWhere,
+                    entryType: { in: [LedgerEntryType.CASH_OUT, LedgerEntryType.MANAGER_PAYOUT, LedgerEntryType.ADJUSTMENT] },
+                },
+                orderBy: { recordedAt: 'desc' },
+                take: 120,
+                select: {
+                    id: true,
+                    hotelId: true,
+                    amount: true,
+                    method: true,
+                    note: true,
+                    recordedAt: true,
+                    entryType: true,
+                    expenseCategory: {
+                        select: {
+                            name: true
+                        }
+                    },
+                    manager: {
+                        select: {
+                            displayName: true,
+                        },
+                    },
+                },
+            })
+        ]);
+
+        const createBreakdown = () => ({ total: 0, cash: 0, card: 0 });
+        const defaultLedger = () => ({
+            [LedgerEntryType.CASH_IN]: createBreakdown(),
+            [LedgerEntryType.CASH_OUT]: createBreakdown(),
+            [LedgerEntryType.MANAGER_PAYOUT]: createBreakdown(),
+            [LedgerEntryType.ADJUSTMENT]: createBreakdown()
+        });
+
+        const ledgerMap = new Map<string, Record<LedgerEntryType, { total: number; cash: number; card: number }>>();
+
+        for (const group of ledgerGroups) {
+            const summary = ledgerMap.get(group.hotelId) ?? (() => {
+                const fresh = defaultLedger();
+                ledgerMap.set(group.hotelId, fresh);
+                return fresh;
+            })();
+            const bucket = summary[group.entryType];
+            const amount = group._sum?.amount ?? 0;
+            bucket.total += amount;
+            if (group.method === PaymentMethod.CASH) {
+                bucket.cash += amount;
+            } else if (group.method === PaymentMethod.CARD) {
+                bucket.card += amount;
+            }
+        }
+
+        for (const entry of collectionEntries) {
+            if (!isCollectionLedgerEntry(entry)) {
+                continue;
+            }
+            const summary = ledgerMap.get(entry.hotelId) ?? (() => {
+                const fresh = defaultLedger();
+                ledgerMap.set(entry.hotelId, fresh);
+                return fresh;
+            })();
+            const bucket = summary[LedgerEntryType.CASH_OUT];
+            bucket.total -= entry.amount;
+            if (entry.method === PaymentMethod.CASH) {
+                bucket.cash -= entry.amount;
+            } else if (entry.method === PaymentMethod.CARD) {
+                bucket.card -= entry.amount;
+            }
+        }
+
+        const recentExpensesMap = new Map<string, Array<{
+            id: string;
+            amount: number;
+            method: PaymentMethod;
+            note: string | null;
+            categoryName: string | null;
+            recordedAt: Date;
+            entryType: LedgerEntryType;
+            managerName: string | null;
+        }>>();
+
+        for (const entry of recentExpenseEntries) {
+            const bucket = recentExpensesMap.get(entry.hotelId) ?? [];
+            if (bucket.length < 3) {
+                bucket.push({
+                    id: entry.id,
+                    amount: entry.amount,
+                    method: entry.method,
+                    note: entry.note,
+                    categoryName: entry.expenseCategory?.name ?? null,
+                    recordedAt: entry.recordedAt,
+                    entryType: entry.entryType,
+                    managerName: entry.manager?.displayName ?? null,
+                });
+            }
+            recentExpensesMap.set(entry.hotelId, bucket);
+        }
+
+        const payload = hotels.map((hotel) => ({
+            id: hotel.id,
+            name: hotel.name,
+            address: hotel.address,
+            country: hotel.country,
+            timezone: hotel.timezone,
+            currency: hotel.currency,
+            usesExtranets: hotel.usesExtranets,
+            extranetNames: hotel.extranetNames,
+            financialCycleStartDay: hotel.financialCycleStartDay,
+            managerSharePct: hotel.managerSharePct,
+            monthlyPayrollCost: hotel.monthlyPayrollCost,
+            monthlyRentCost: hotel.monthlyRentCost,
+            monthlyUtilitiesCost: hotel.monthlyUtilitiesCost,
+            monthlySuppliesCost: hotel.monthlySuppliesCost,
+            monthlyOtherCost: hotel.monthlyOtherCost,
+            notes: hotel.notes,
+            cleaningChatId: hotel.cleaningChatId,
+            roomCount: hotel.rooms.length,
+            occupiedRooms: hotel.rooms.filter((room) => room.status === RoomStatus.OCCUPIED).length,
+            managers: hotel.assignments.map((assignment) => ({
+                id: assignment.user.id,
+                displayName: assignment.user.displayName,
+                telegramId: assignment.user.telegramId,
+                loginName: assignment.user.loginName,
+                username: assignment.user.username,
+                role: assignment.role,
+                pinCode: assignment.pinCode,
+                shiftPayAmount: assignment.shiftPayAmount,
+                revenueSharePct: assignment.revenueSharePct
+            })),
+            activeShift: hotel.shifts[0]
+                ? {
+                    manager: hotel.shifts[0].manager.displayName,
+                    openedAt: hotel.shifts[0].openedAt,
+                    openingCash: hotel.shifts[0].openingCash,
+                    number: hotel.shifts[0].number
+                }
+                : null,
+            ledger: (() => {
+                const summary = ledgerMap.get(hotel.id) ?? defaultLedger();
+                const toBreakdown = (type: LedgerEntryType) => ({
+                    cash: summary[type].cash,
+                    card: summary[type].card
+                });
+                return {
+                    cashIn: summary[LedgerEntryType.CASH_IN].total,
+                    cashInBreakdown: toBreakdown(LedgerEntryType.CASH_IN),
+                    cashOut: summary[LedgerEntryType.CASH_OUT].total,
+                    cashOutBreakdown: toBreakdown(LedgerEntryType.CASH_OUT),
+                    collections: collectionEntries
+                        .filter((entry) => entry.hotelId === hotel.id && isCollectionLedgerEntry(entry))
+                        .reduce((total, entry) => total + entry.amount, 0)
+                };
+            })(),
+            recentExpenses: recentExpensesMap.get(hotel.id) ?? []
+        }));
+
+        return NextResponse.json(payload);
+    } catch (error) {
+        return handleApiError(error, 'Failed to load hotels');
+    }
+}
+
+export async function POST(request: NextRequest) {
+    try {
+        const body = await request.json();
+        const session = await getSessionUser(request);
+        assertAdmin(session);
+
+        const payload = createHotelSchema.parse(body);
+
+        // Казахстанская версия проекта: все новые объекты создаются в KZ.
+        const headerCountry = request.headers.get('x-country-code');
+        const country = payload.country || (headerCountry === 'KZ'
+            ? headerCountry
+            : 'KZ');
+
+        const hotel = await prisma.hotel.create({
+            data: {
+                ...payload,
+                usesExtranets: payload.usesExtranets ?? false,
+                extranetNames: sanitizeExtranetNames(payload.extranetNames ?? []),
+                country
+            }
+        });
+
+        return NextResponse.json(hotel, { status: 201 });
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            return new NextResponse(error.message, { status: 400 });
+        }
+        return handleApiError(error, 'Failed to create hotel');
+    }
+}

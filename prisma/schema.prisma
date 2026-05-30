@@ -1,0 +1,257 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String            @id @default(cuid())
+  telegramId  String            @unique
+  displayName String
+  username    String?
+  role        UserRole          @default(MANAGER)
+  avatarUrl   String?
+  loginName   String?           @unique @map("login_name")
+  loginHash   String?           @map("login_hash")
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  ledger      CashEntry[]
+  assignments HotelAssignment[]
+  shifts      Shift[]           @relation("ShiftManager")
+  receivedHandovers Shift[]     @relation("ShiftHandoverRecipient")
+}
+
+model Hotel {
+  id              String            @id @default(cuid())
+  name            String
+  address         String
+  city            String?
+  country         String            @default("KZ")
+  timezone        String            @default("Asia/Almaty")
+  currency        String            @default("KZT")
+  usesExtranets   Boolean           @default(false) @map("uses_extranets")
+  extranetNames   String[]          @default([]) @map("extranet_names")
+  financialCycleStartDay Int        @default(1) @map("financial_cycle_start_day")
+  managerSharePct Int?              @map("manager_share_pct")
+  cleaningChatId  String?           @map("cleaning_chat_id")
+  monthlyPayrollCost   Int          @default(0) @map("monthly_payroll_cost")
+  monthlyRentCost      Int          @default(0) @map("monthly_rent_cost")
+  monthlyUtilitiesCost Int          @default(0) @map("monthly_utilities_cost")
+  monthlySuppliesCost  Int          @default(0) @map("monthly_supplies_cost")
+  monthlyOtherCost     Int          @default(0) @map("monthly_other_cost")
+  notes           String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  ledger          CashEntry[]
+  assignments     HotelAssignment[]
+  rooms           Room[]
+  stays           RoomStay[]
+  shifts          Shift[]
+  bonusTiers      BonusTier[]
+  expenseCategories ExpenseCategory[]
+}
+
+model HotelAssignment {
+  id        String   @id @default(cuid())
+  hotelId   String
+  userId    String
+  role      UserRole
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  pinCode   String?  @map("pin_code") @db.VarChar(6)
+  pinHash   String?  @map("pin_hash")
+  shiftPayAmount Int? @map("shift_pay_amount")
+  revenueSharePct Int? @map("revenue_share_pct")
+  hotel     Hotel    @relation(fields: [hotelId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([hotelId, userId])
+  @@index([hotelId, pinCode])
+}
+
+model Room {
+  id            String     @id @default(cuid())
+  hotelId       String
+  label         String
+  floor         String?
+  isActive      Boolean    @default(true)
+  status        RoomStatus @default(AVAILABLE)
+  currentStayId String?    @unique
+  notes         String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  currentStay   RoomStay?  @relation("RoomCurrentStay", fields: [currentStayId], references: [id])
+  hotel         Hotel      @relation(fields: [hotelId], references: [id])
+  stays         RoomStay[] @relation("RoomStayHistory")
+  transfersFrom StayTransfer[] @relation("StayTransferFromRoom")
+  transfersTo   StayTransfer[] @relation("StayTransferToRoom")
+
+  @@index([hotelId, label])
+}
+
+model RoomStay {
+  id                String         @id @default(cuid())
+  roomId            String
+  hotelId           String
+  shiftId           String?
+  guestName         String?
+  guestPhone        String?        @map("guest_phone")
+  companyName       String?        @map("company_name")
+  bookingSource     String?        @map("booking_source")
+  scheduledCheckIn  DateTime
+  scheduledCheckOut DateTime
+  actualCheckIn     DateTime?
+  actualCheckOut    DateTime?
+  status            StayStatus     @default(SCHEDULED)
+  notes             String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  amountPaid        Int?
+  paymentMethod     PaymentMethod?
+  cashPaid          Int            @default(0)
+  cardPaid          Int            @default(0)
+  onlinePaid        Int            @default(0) @map("online_paid")
+  ledgerEntries     CashEntry[]
+  currentRoom       Room?          @relation("RoomCurrentStay")
+  hotel             Hotel          @relation(fields: [hotelId], references: [id])
+  room              Room           @relation("RoomStayHistory", fields: [roomId], references: [id])
+  shift             Shift?         @relation(fields: [shiftId], references: [id])
+  transfers         StayTransfer[]
+}
+
+model StayTransfer {
+  id         String   @id @default(cuid())
+  stayId      String   @map("stay_id")
+  fromRoomId  String   @map("from_room_id")
+  toRoomId    String   @map("to_room_id")
+  shiftId     String?  @map("shift_id")
+  note        String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  stay        RoomStay @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  fromRoom    Room     @relation("StayTransferFromRoom", fields: [fromRoomId], references: [id])
+  toRoom      Room     @relation("StayTransferToRoom", fields: [toRoomId], references: [id])
+  shift       Shift?   @relation(fields: [shiftId], references: [id])
+
+  @@index([stayId, createdAt])
+  @@index([fromRoomId, createdAt])
+  @@index([toRoomId, createdAt])
+}
+
+model Shift {
+  id           String      @id @default(cuid())
+  hotelId      String
+  managerId    String
+  status       ShiftStatus @default(OPEN)
+  openedAt     DateTime    @default(now())
+  closedAt     DateTime?
+  openingCash  Int
+  closingCash  Int?
+  handoverCash Int?
+  openingNote  String?
+  closingNote  String?
+  handoverNote String?
+  handoverRecipientId String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  number       Int         @default(0)
+  ledger       CashEntry[]
+  stays        RoomStay[]
+  transfers    StayTransfer[]
+  hotel        Hotel       @relation(fields: [hotelId], references: [id])
+  manager      User        @relation("ShiftManager", fields: [managerId], references: [id])
+  handoverRecipient   User?      @relation("ShiftHandoverRecipient", fields: [handoverRecipientId], references: [id])
+
+  @@unique([hotelId, number])
+  @@index([hotelId, status])
+}
+
+model CashEntry {
+  id         String          @id @default(cuid())
+  shiftId    String?
+  stayId     String?         @map("stay_id")
+  hotelId    String
+  managerId  String?
+  categoryId String?         @map("expense_category_id")
+  entryType  LedgerEntryType
+  method     PaymentMethod
+  amount     Int
+  note       String?
+  meta       Json?
+  recordedAt DateTime        @default(now())
+  expenseCategory ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  stay       RoomStay?       @relation(fields: [stayId], references: [id], onDelete: SetNull)
+  hotel      Hotel           @relation(fields: [hotelId], references: [id])
+  manager    User?           @relation(fields: [managerId], references: [id])
+  shift      Shift?          @relation(fields: [shiftId], references: [id])
+
+  @@index([stayId])
+}
+
+model ExpenseCategory {
+  id        String      @id @default(cuid())
+  hotelId   String
+  name      String
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  hotel     Hotel       @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  entries   CashEntry[]
+
+  @@unique([hotelId, name])
+  @@index([hotelId])
+}
+
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  OBSERVER
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+}
+
+enum LedgerEntryType {
+  CASH_IN
+  CASH_OUT
+  MANAGER_PAYOUT
+  ADJUSTMENT
+}
+
+enum StayStatus {
+  SCHEDULED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+}
+
+enum RoomStatus {
+  AVAILABLE
+  OCCUPIED
+  DIRTY
+  HOLD
+}
+
+model BonusTier {
+  id        String   @id @default(cuid())
+  hotelId   String
+  threshold Int      // cash threshold in smallest unit (tiyin/tenge)
+  bonus     Int      // fixed bonus amount in smallest unit
+  bonusPct  Int?     @map("bonus_pct") // alternative: percentage * 100 (e.g. 500 = 5%)
+  hotel     Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([hotelId, threshold])
+  @@index([hotelId])
+}
+

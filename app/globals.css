@@ -1,0 +1,118 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    /* Light theme */
+    --bg-primary: #f6f8fc;
+    --bg-secondary: #f6f8fc;
+    --bg-surface: #ffffff;
+    --bg-hover: #eef2f7;
+    --text-primary: #111827;
+    --text-secondary: #374151;
+    --text-tertiary: #64748b;
+    --border-color: #d5dbe7;
+    --shadow: rgba(15, 23, 42, 0.08);
+}
+
+.dark {
+    /* Dark theme - мягкие цвета без резкого контраста */
+    --bg-primary: #1a1a24;
+    --bg-secondary: #0f0f18;
+    --bg-surface: #252532;
+    --bg-hover: #2d2d3d;
+    --text-primary: #e2e8f0;
+    --text-secondary: #cbd5e0;
+    --text-tertiary: #a0aec0;
+    --border-color: rgba(255, 255, 255, 0.08);
+    --shadow: rgba(0, 0, 0, 0.3);
+}
+
+* {
+    -webkit-tap-highlight-color: transparent;
+}
+
+body {
+    margin: 0;
+    font-family: var(--font-sans), 'Space Grotesk', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    background-color: var(--bg-secondary);
+    background-image: none;
+    color: var(--text-primary);
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.dark body {
+    background-image:
+        radial-gradient(circle at top left, rgba(56, 189, 248, 0.06), transparent 24%),
+        radial-gradient(circle at top right, rgba(168, 85, 247, 0.05), transparent 20%);
+}
+
+/* Desktop layout - на всю ширину */
+.desktop-container {
+    width: 100%;
+}
+
+@media (min-width: 1024px) {
+    .mobile-only {
+        display: none !important;
+    }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+/* Remove input autofill bg */
+input:-webkit-autofill {
+    -webkit-box-shadow: 0 0 0 30px var(--bg-secondary) inset !important;
+    -webkit-text-fill-color: var(--text-primary) !important;
+}
+
+/* Select options */
+option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+/* Toast slide-up */
+@keyframes slide-up {
+    from {
+        opacity: 0;
+        transform: translateY(12px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-slide-up {
+    animation: slide-up 0.2s ease-out;
+}
+
+.scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+    display: none;
+}
