@@ -26,9 +26,9 @@ const config: Config = {
                 'surface-hover': 'rgba(255,255,255,0.07)',
                 border: 'rgba(255,255,255,0.08)',
                 // Light theme colors
-                'light-bg': '#f6f8fc',
+                'light-bg': '#edf2f7',
                 'light-surface': '#ffffff',
-                'light-border': '#d5dbe7',
+                'light-border': '#c5cfdd',
                 'light-text': '#111827'
             },
             borderRadius: {

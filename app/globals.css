@@ -4,15 +4,15 @@
 
 :root {
     /* Light theme */
-    --bg-primary: #f6f8fc;
-    --bg-secondary: #f6f8fc;
+    --bg-primary: #edf2f7;
+    --bg-secondary: #edf2f7;
     --bg-surface: #ffffff;
-    --bg-hover: #eef2f7;
+    --bg-hover: #e2e8f0;
     --text-primary: #111827;
-    --text-secondary: #374151;
-    --text-tertiary: #64748b;
-    --border-color: #d5dbe7;
-    --shadow: rgba(15, 23, 42, 0.08);
+    --text-secondary: #1f2937;
+    --text-tertiary: #475569;
+    --border-color: #c5cfdd;
+    --shadow: rgba(15, 23, 42, 0.14);
 }
 
 .dark {
