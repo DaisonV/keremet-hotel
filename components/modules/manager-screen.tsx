@@ -1296,8 +1296,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                 </>
                             )}
                         </header>
-                        <div className="sticky top-0 z-40 -mx-3 bg-light-bg/95 px-3 py-2 backdrop-blur-md dark:bg-night/95 sm:-mx-5 sm:px-5">
-                            <div className="flex gap-1 rounded-xl border border-slate-200 bg-white p-1 text-sm font-medium text-slate-700 shadow-sm dark:border-white/[0.055] dark:bg-white/[0.05] dark:text-white/50">
+                        <div className="sticky top-0 z-40 -mx-3 border-b border-slate-300 bg-light-bg px-3 py-2 shadow-[0_14px_32px_-30px_rgba(15,23,42,0.7)] dark:border-white/[0.06] dark:bg-night sm:-mx-5 sm:px-5">
+                            <div className="flex gap-1 rounded-xl border border-slate-300 bg-white p-1 text-sm font-medium text-slate-800 shadow-[0_14px_30px_-26px_rgba(15,23,42,0.55)] dark:border-white/[0.055] dark:bg-white/[0.05] dark:text-white/50">
                                 {panelTabs.map((tab) => (
                                     <button
                                         key={tab.id}

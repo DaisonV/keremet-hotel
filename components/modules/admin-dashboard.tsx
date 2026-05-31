@@ -1474,9 +1474,9 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                             </Button>
                         </div>
                     </header>
-                    <div className="sticky top-0 z-10 -mx-3 px-3 py-1 sm:-mx-5 sm:px-5 lg:-mx-8 lg:px-8">
-                        <div className="rounded-[24px] border border-slate-200 bg-white p-1.5 shadow-[0_14px_34px_-30px_rgba(15,23,42,0.34)] dark:border-white/[0.06] dark:bg-white/[0.045] dark:shadow-none">
-                            <div className="flex gap-1 rounded-[18px] bg-slate-100 p-1 text-sm font-medium text-slate-700 dark:bg-white/[0.04] dark:text-white/50">
+                    <div className="sticky top-0 z-10 -mx-3 border-b border-slate-300 bg-light-bg px-3 py-2 shadow-[0_14px_32px_-30px_rgba(15,23,42,0.7)] sm:-mx-5 sm:px-5 lg:-mx-8 lg:px-8 dark:border-white/[0.06] dark:bg-night">
+                        <div className="rounded-[24px] border border-slate-300 bg-white p-1.5 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.52)] dark:border-white/[0.06] dark:bg-white/[0.045] dark:shadow-none">
+                            <div className="flex gap-1 rounded-[18px] bg-slate-200 p-1 text-sm font-medium text-slate-800 dark:bg-white/[0.04] dark:text-white/50">
                                 {adminTabs.map((tab) => (
                                     <button
                                         key={tab.id}
