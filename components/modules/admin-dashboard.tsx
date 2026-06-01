@@ -4,6 +4,19 @@ import Link from "next/link";
 import { useCallback, useDeferredValue, useEffect, useMemo, useState, type ChangeEvent, type CSSProperties, type FormEvent } from "react";
 import { useToast } from '@/components/ui/toast';
 import useSWR from "swr";
+import {
+    Activity,
+    BarChart3,
+    Building2,
+    CircleDollarSign,
+    Download,
+    Hotel,
+    LogOut,
+    Settings2,
+    SlidersHorizontal,
+    Users,
+    type LucideIcon,
+} from "lucide-react";
 import { useCountryContext } from '@/hooks/useCountryContext';
 
 import { getCountryConfig, type CountryCode } from "@/lib/country";
@@ -321,11 +334,11 @@ const createPeriodFilters = (preset: PeriodPreset, timeZone: string): OverviewFi
 
 function SectionCard({ title, subtitle, actions, className, children }: { title: string; subtitle?: string; actions?: React.ReactNode; className?: string; children: React.ReactNode }) {
     return (
-        <Card className={`!border-slate-200 !bg-white !shadow-[0_10px_28px_-24px_rgba(15,23,42,0.34)] p-3.5 sm:p-5 dark:!border-white/[0.055] dark:!bg-white/[0.04] dark:!shadow-none ${className ?? ""}`}>
-            <div className="mb-3 flex flex-col gap-3 sm:mb-4 sm:flex-row sm:items-start sm:justify-between">
+        <Card className={`!border-slate-200 !bg-white !shadow-[0_10px_28px_-24px_rgba(15,23,42,0.34)] p-3.5 sm:p-5 lg:!rounded-lg lg:p-4 dark:!border-white/[0.055] dark:!bg-white/[0.04] dark:!shadow-none ${className ?? ""}`}>
+            <div className="mb-3 flex flex-col gap-3 sm:mb-4 sm:flex-row sm:items-start sm:justify-between lg:mb-3">
                 <div className="min-w-0">
                     {subtitle ? <p className="text-[11px] uppercase tracking-[0.22em] text-slate-600 dark:text-white/30">{subtitle}</p> : null}
-                    <h2 className="mt-1 text-base font-semibold text-slate-900 dark:text-white sm:text-lg">{title}</h2>
+                    <h2 className="mt-1 text-base font-semibold text-slate-900 dark:text-white sm:text-lg lg:text-base">{title}</h2>
                 </div>
                 {actions}
             </div>
@@ -350,7 +363,7 @@ function Field({ label, hint, htmlFor, children }: { label: string; hint?: strin
 
 function StatPill({ label, value }: { label: string; value: string }) {
     return (
-        <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-white/[0.055] dark:bg-white/[0.03] sm:rounded-2xl">
+        <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-white/[0.055] dark:bg-white/[0.03] sm:rounded-2xl lg:rounded-md">
             <p className="text-[10px] uppercase tracking-[0.2em] text-slate-600 dark:text-white/28">{label}</p>
             <p className="mt-1 break-words text-sm font-semibold leading-snug text-slate-800 dark:text-white">{value}</p>
         </div>
@@ -705,7 +718,7 @@ function SummaryCard({ label, value, valueColor, detail }: {
 }) {
     const [open, setOpen] = useState(false);
     return (
-        <Card className="overflow-hidden p-4 text-light-text dark:text-white">
+        <Card className="overflow-hidden p-4 text-light-text transition-colors hover:border-slate-300 dark:text-white dark:hover:border-white/10 lg:!rounded-lg">
             <div className="flex items-start justify-between gap-2">
                 <p className="min-w-0 text-[10px] uppercase leading-tight tracking-[0.16em] text-slate-600 dark:text-white/30 sm:text-[11px] sm:tracking-[0.22em]">{label}</p>
                 <button
@@ -1353,10 +1366,10 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
         }
     }, [mutate, notify, overviewDisplay, selectedHotelId, withCountry]);
 
-    const adminTabs: Array<{ id: AdminTab; label: string; hint?: string }> = [
-        { id: "overview", label: "Сводка" },
-        { id: "hotels", label: "Объекты", hint: hotels.length ? String(hotels.length) : undefined },
-        { id: "manage", label: "Управление" },
+    const adminTabs: Array<{ id: AdminTab; label: string; hint?: string; description: string; icon: LucideIcon }> = [
+        { id: "overview", label: "Сводка", description: "Финансы, загрузка и темп", icon: BarChart3 },
+        { id: "hotels", label: "Объекты", hint: hotels.length ? String(hotels.length) : undefined, description: "Состояние филиалов", icon: Hotel },
+        { id: "manage", label: "Управление", description: "Настройки и доступы", icon: Settings2 },
     ];
 
     const managerOptions = useMemo(() => {
@@ -1452,60 +1465,200 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
         URL.revokeObjectURL(url);
     }, [overview, filters.startDate, filters.endDate, overviewCurrency]);
 
+    const activeTabConfig = adminTabs.find((tab) => tab.id === activeTab) ?? adminTabs[0];
+    const ActiveTabIcon = activeTabConfig.icon;
+    const visibleHotelCount = filters.hotelId ? 1 : overviewHotels.length;
+    const desktopPeriodLabel = [filters.startDate || "начало", filters.endDate || "сегодня"].join(" - ");
+    const desktopStats = [
+        {
+            label: "Баланс",
+            value: overview ? formatCurrency(overview.totals.netCash, overviewCurrency) : "—",
+            icon: CircleDollarSign,
+            tone: overview && overview.totals.netCash < 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-700 dark:text-emerald-300",
+        },
+        {
+            label: "Загрузка",
+            value: overview ? formatPercent(overview.occupancy.rate) : "—",
+            icon: Activity,
+            tone: "text-slate-800 dark:text-white",
+        },
+        {
+            label: "Объекты",
+            value: String(visibleHotelCount),
+            icon: Building2,
+            tone: "text-slate-800 dark:text-white",
+        },
+        {
+            label: "Менеджеры",
+            value: String(managerOptions.length),
+            icon: Users,
+            tone: "text-slate-800 dark:text-white",
+        },
+    ];
+
     return (
-        <div className="min-h-screen bg-light-bg dark:bg-night">
-            <div className="desktop-container">
-                <div className="flex min-h-screen flex-col gap-4 px-3 pb-16 pt-4 sm:px-5 lg:gap-5 lg:px-8 lg:pt-6">
-                    <header className="flex flex-col gap-4 rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_34px_-28px_rgba(15,23,42,0.34)] dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-none lg:flex-row lg:items-center lg:justify-between lg:p-5">
-                        <div>
-                            <p className="text-[11px] uppercase tracking-[0.24em] text-slate-600 dark:text-white/30">Администрирование</p>
-                            <h1 className="mt-1 text-xl font-semibold text-light-text dark:text-white lg:text-2xl">{user.displayName}</h1>
-                            <p className="mt-1 text-sm text-slate-600 dark:text-white/45">Чистая сводка по объектам, финансам и настройкам без перегруженных форм.</p>
+        <div className="min-h-screen bg-[#f4f6f8] text-light-text dark:bg-[#0f1218]">
+            <div className="lg:grid lg:min-h-screen lg:grid-cols-[17rem_minmax(0,1fr)]">
+                <aside className="hidden border-r border-slate-200 bg-white/94 px-4 py-5 shadow-[12px_0_34px_-34px_rgba(15,23,42,0.48)] dark:border-white/[0.065] dark:bg-[#11151d]/96 lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
+                    <div className="flex items-center gap-3 border-b border-slate-200 pb-5 dark:border-white/[0.06]">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-950 text-white dark:bg-white dark:text-slate-950">
+                            <Building2 className="h-5 w-5" aria-hidden="true" />
                         </div>
-                        <div className="flex items-center gap-2 self-start lg:self-auto">
-                            <ThemeToggle />
-                            <Button
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                onClick={handleLogout}
-                            >
-                                Выйти
-                            </Button>
+                        <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-950 dark:text-white">Keremet Ops</p>
+                            <p className="truncate text-xs text-slate-500 dark:text-white/42">{user.displayName}</p>
+                        </div>
+                    </div>
+
+                    <nav className="mt-5 space-y-1.5">
+                        {adminTabs.map((tab) => {
+                            const Icon = tab.icon;
+                            const active = activeTab === tab.id;
+                            return (
+                                <button
+                                    key={tab.id}
+                                    type="button"
+                                    onClick={() => setActiveTab(tab.id)}
+                                    className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition ${active
+                                        ? "bg-slate-950 text-white shadow-[0_14px_30px_-22px_rgba(15,23,42,0.7)] dark:bg-white dark:text-slate-950"
+                                        : "text-slate-600 hover:bg-slate-100 hover:text-slate-950 dark:text-white/58 dark:hover:bg-white/[0.055] dark:hover:text-white"
+                                        }`}
+                                >
+                                    <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block truncate text-sm font-medium">{tab.label}</span>
+                                        <span className={`block truncate text-[11px] ${active ? "text-white/62 dark:text-slate-500" : "text-slate-400 dark:text-white/30"}`}>{tab.description}</span>
+                                    </span>
+                                    {tab.hint ? <span className={`rounded-full px-2 py-0.5 text-[10px] ${active ? "bg-white/14 text-white dark:bg-slate-900/8 dark:text-slate-500" : "bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-white/38"}`}>{tab.hint}</span> : null}
+                                </button>
+                            );
+                        })}
+                    </nav>
+
+                    <div className="mt-6 space-y-2 border-t border-slate-200 pt-5 dark:border-white/[0.06]">
+                        {desktopStats.slice(0, 3).map((item) => {
+                            const Icon = item.icon;
+                            return (
+                                <div key={item.label} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-white/[0.055] dark:bg-white/[0.035]">
+                                    <Icon className="h-4 w-4 text-slate-400 dark:text-white/32" aria-hidden="true" />
+                                    <div className="min-w-0">
+                                        <p className="text-[10px] uppercase tracking-[0.14em] text-slate-500 dark:text-white/28">{item.label}</p>
+                                        <p className={`truncate text-sm font-semibold ${item.tone}`}>{item.value}</p>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    <div className="mt-auto flex items-center justify-between gap-2 border-t border-slate-200 pt-4 dark:border-white/[0.06]">
+                        <ThemeToggle />
+                        <Button type="button" size="sm" variant="ghost" className="gap-2" onClick={handleLogout}>
+                            <LogOut className="h-4 w-4" aria-hidden="true" />
+                            Выйти
+                        </Button>
+                    </div>
+                </aside>
+
+                <div className="min-w-0">
+                    <header className="flex flex-col gap-4 border-b border-slate-200 bg-white px-3 py-4 shadow-[0_14px_34px_-32px_rgba(15,23,42,0.38)] dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-none sm:px-5 lg:hidden">
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-600 dark:text-white/30">Администрирование</p>
+                                <h1 className="mt-1 truncate text-xl font-semibold text-light-text dark:text-white">{user.displayName}</h1>
+                                <p className="mt-1 text-sm text-slate-600 dark:text-white/45">Сводка, объекты и доступы.</p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                                <ThemeToggle />
+                                <Button type="button" size="icon" variant="ghost" aria-label="Выйти" onClick={handleLogout}>
+                                    <LogOut className="h-4 w-4" aria-hidden="true" />
+                                </Button>
+                            </div>
                         </div>
                     </header>
-                    <div className="sticky top-0 z-10 -mx-3 border-b border-slate-300 bg-light-bg px-3 py-2 shadow-[0_14px_32px_-30px_rgba(15,23,42,0.7)] sm:-mx-5 sm:px-5 lg:-mx-8 lg:px-8 dark:border-white/[0.06] dark:bg-night">
-                        <div className="rounded-[24px] border border-slate-300 bg-white p-1.5 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.52)] dark:border-white/[0.06] dark:bg-white/[0.045] dark:shadow-none">
-                            <div className="flex gap-1 rounded-[18px] bg-slate-200 p-1 text-sm font-medium text-slate-800 dark:bg-white/[0.04] dark:text-white/50">
-                                {adminTabs.map((tab) => (
-                                    <button
-                                        key={tab.id}
-                                        type="button"
-                                        onClick={() => setActiveTab(tab.id)}
-                                        className={`flex-1 rounded-lg px-3 py-1.5 transition-all ${activeTab === tab.id
-                                            ? "bg-white text-slate-950 shadow-sm dark:bg-white/[0.12] dark:text-white"
-                                            : "hover:text-slate-950 dark:hover:text-white/70"
-                                            }`}
-                                    >
-                                        <span>{tab.label}</span>
-                                        {tab.hint ? <span className="ml-1.5 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-white/[0.06] dark:text-white/40">{tab.hint}</span> : null}
-                                    </button>
-                                ))}
+                    <div className="sticky top-0 z-10 bg-[#f4f6f8]/94 px-3 py-2 backdrop-blur-md dark:bg-[#0f1218]/94 sm:px-5 lg:hidden">
+                        <div className="rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-white/[0.06] dark:bg-white/[0.045]">
+                            <div className="flex gap-1 text-sm font-medium text-slate-700 dark:text-white/50">
+                                {adminTabs.map((tab) => {
+                                    const Icon = tab.icon;
+                                    return (
+                                        <button
+                                            key={tab.id}
+                                            type="button"
+                                            onClick={() => setActiveTab(tab.id)}
+                                            className={`flex-1 rounded-md px-2.5 py-1.5 transition-all ${activeTab === tab.id
+                                                ? "bg-white text-slate-950 shadow-sm dark:bg-white/[0.12] dark:text-white"
+                                                : "hover:text-slate-950 dark:hover:text-white/70"
+                                                }`}
+                                        >
+                                            <span className="flex items-center justify-center gap-1.5">
+                                                <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+                                                <span>{tab.label}</span>
+                                                {tab.hint ? <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-white/[0.06] dark:text-white/40">{tab.hint}</span> : null}
+                                            </span>
+                                        </button>
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>
 
+                    <main className="px-3 pb-16 pt-3 sm:px-5 lg:px-6 lg:py-6 xl:px-8">
+                        <div className="mb-5 hidden items-center justify-between gap-4 lg:flex">
+                            <div className="flex min-w-0 items-center gap-3">
+                                <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-800 dark:border-white/[0.06] dark:bg-white/[0.045] dark:text-white">
+                                    <ActiveTabIcon className="h-5 w-5" aria-hidden="true" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-white/32">{activeTabConfig.description}</p>
+                                    <h1 className="truncate text-2xl font-semibold tracking-normal text-slate-950 dark:text-white">{activeTabConfig.label}</h1>
+                                </div>
+                            </div>
+                            <div className="flex min-w-0 items-center gap-2">
+                                <div className="hidden rounded-lg border border-slate-200 bg-white px-3 py-2 text-right dark:border-white/[0.06] dark:bg-white/[0.035] xl:block">
+                                    <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:text-white/30">Период</p>
+                                    <p className="text-xs font-medium text-slate-700 dark:text-white/62">{desktopPeriodLabel}</p>
+                                </div>
+                                {overview ? (
+                                    <Button type="button" size="sm" variant="secondary" className="gap-2" onClick={handleExportCSV}>
+                                        <Download className="h-4 w-4" aria-hidden="true" />
+                                        CSV
+                                    </Button>
+                                ) : null}
+                            </div>
+                        </div>
+
+                        <div className="mb-5 hidden grid-cols-4 gap-3 lg:grid">
+                            {desktopStats.map((item) => {
+                                const Icon = item.icon;
+                                return (
+                                    <div key={item.label} className="min-w-0 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-[0_10px_28px_-26px_rgba(15,23,42,0.36)] dark:border-white/[0.06] dark:bg-white/[0.035] dark:shadow-none">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <p className="truncate text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:text-white/30">{item.label}</p>
+                                            <Icon className="h-4 w-4 shrink-0 text-slate-400 dark:text-white/32" aria-hidden="true" />
+                                        </div>
+                                        <p className={`mt-2 truncate text-lg font-semibold ${item.tone}`}>{item.value}</p>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
                     {activeTab === "overview" && (
-                        <>
+                        <div className="space-y-3 lg:grid lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start lg:gap-4 lg:space-y-0 xl:grid-cols-[minmax(0,1fr)_24rem]">
                             <SectionCard
                                 title="Фильтры обзора"
                                 subtitle="Overview"
+                                className="lg:sticky lg:top-6 lg:col-start-2 lg:row-span-2"
                                 actions={overview ? (
-                                    <Button type="button" size="sm" variant="secondary" className="w-full sm:w-auto" onClick={handleExportCSV}>
+                                    <Button type="button" size="sm" variant="secondary" className="w-full gap-2 sm:w-auto lg:hidden" onClick={handleExportCSV}>
+                                        <Download className="h-4 w-4" aria-hidden="true" />
                                         Скачать CSV
                                     </Button>
                                 ) : undefined}
                             >
+                                <div className="mb-3 hidden items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:border-white/[0.055] dark:bg-white/[0.03] dark:text-white/45 lg:flex">
+                                    <SlidersHorizontal className="h-4 w-4 shrink-0" aria-hidden="true" />
+                                    <span className="truncate">{desktopPeriodLabel}</span>
+                                </div>
                                 <div className="mb-4 flex flex-wrap gap-2">
                                     {([
                                         { id: "today", label: "Сегодня" },
@@ -1526,7 +1679,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                                         </button>
                                     ))}
                                 </div>
-                                <div className="grid grid-cols-1 gap-3 xs:grid-cols-2 xl:grid-cols-4">
+                                <div className="grid grid-cols-1 gap-3 xs:grid-cols-2 lg:grid-cols-1">
                                     <Field label="Период от" htmlFor="overview-start">
                                         <Input
                                             id="overview-start"
@@ -1577,7 +1730,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                                     </Field>
                                 </div>
                             </SectionCard>
-                            <section className="grid grid-cols-1 gap-2 lg:grid-cols-4">
+                            <section className="grid grid-cols-1 gap-2 lg:col-start-1 lg:row-start-1 lg:grid-cols-4 lg:gap-3">
                                 {overview ? (
                                     <>
                                         <BusinessTargetCard
@@ -1585,7 +1738,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                                             currency={overviewCurrency}
                                             hotelLabel={overviewHotelLabel}
                                         />
-                                        <Card className="overflow-hidden p-4 text-light-text dark:text-white lg:p-5">
+                                        <Card className="overflow-hidden p-4 text-light-text dark:text-white lg:!rounded-lg lg:p-4">
                                             <p className="text-[11px] uppercase tracking-[0.22em] text-slate-600 dark:text-white/30">Баланс</p>
                                             <p className="mt-2 text-lg sm:text-2xl lg:text-[1.75rem] font-semibold tracking-tight truncate">{formatCurrency(overview.totals.netCash, overviewCurrency)}</p>
                                             <div className="mt-4 grid grid-cols-2 gap-2">
@@ -1605,7 +1758,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                                             valueColor="text-rose-600 dark:text-rose-400"
                                             detail={`расход ${formatCurrency(overview.totals.cashOut, overviewCurrency)} · инкас ${formatCurrency(overview.totals.collections, overviewCurrency)}`}
                                         />
-                                        <Card className="overflow-hidden p-4 text-light-text dark:text-white">
+                                        <Card className="overflow-hidden p-4 text-light-text dark:text-white lg:!rounded-lg">
                                             <p className="text-[11px] uppercase tracking-[0.22em] text-slate-600 dark:text-white/30">Загрузка</p>
                                             <p className="mt-2 text-base sm:text-lg font-semibold">
                                                 {formatPercent(overview.occupancy.rate)}
@@ -1660,7 +1813,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                                     <OverviewSkeleton />
                                 )}
                             </section>
-                        </>
+                        </div>
                     )}
 
                     {activeTab === "hotels" && (
@@ -1677,7 +1830,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                                     return (
                                         <Card
                                             key={hotel.id}
-                                            className="p-4 lg:flex lg:h-full lg:flex-col lg:p-5"
+                                            className="p-4 transition-colors hover:border-slate-300 dark:hover:border-white/10 lg:!rounded-lg lg:flex lg:h-full lg:flex-col lg:p-4"
                                         >
                                             <div className="flex items-start justify-between gap-3">
                                                 <div className="min-w-0">
@@ -2096,6 +2249,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                         </div>
                     )}
 
+                    </main>
                 </div>
             </div>
         </div>

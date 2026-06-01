@@ -14,7 +14,7 @@ import type { SessionUser } from '@/lib/types';
 import { useCookieApi } from '@/hooks/useCookieApi';
 import { formatDateTime, formatInputValue, parseInputValue, formatMoney } from '@/lib/timezone';
 import { isCollectionLedgerEntry } from '@/lib/ledger';
-import { ArrowRightLeft, CalendarPlus, LogIn, LogOut } from 'lucide-react';
+import { ArrowRightLeft, CalendarPlus, CheckCircle2, LogIn, LogOut, Users } from 'lucide-react';
 
 type ManagerRoomStay = {
     id: string;
@@ -171,6 +171,21 @@ interface CheckInModalState {
     onlineAmount: string;
 }
 
+interface GroupCheckInState {
+    guestName: string;
+    guestCount: string;
+    checkIn: string;
+    checkOut: string;
+    totalAmount: string;
+    paymentMode: 'CARD' | 'CASH' | 'PENDING_TRANSFER';
+    notes: string;
+    roomIds: string[];
+}
+
+interface ConfirmTransfersState {
+    stayIds: string[];
+}
+
 type PanelKey = 'rooms' | 'shift' | 'cash' | 'history';
 type RoomViewMode = 'cards' | 'board';
 
@@ -300,6 +315,12 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         room: ManagerStateResponse['rooms'][number];
         selectedDay: Date;
     } | null>(null);
+    const [groupCheckIn, setGroupCheckIn] = useState<GroupCheckInState | null>(null);
+    const [isSubmittingGroupCheckIn, setIsSubmittingGroupCheckIn] = useState(false);
+    const [groupCheckInError, setGroupCheckInError] = useState<string | null>(null);
+    const [confirmTransfers, setConfirmTransfers] = useState<ConfirmTransfersState | null>(null);
+    const [isConfirmingTransfers, setIsConfirmingTransfers] = useState(false);
+    const [confirmTransfersError, setConfirmTransfersError] = useState<string | null>(null);
     const [bookingDetails, setBookingDetails] = useState<{
         roomId: string;
         roomLabel: string;
@@ -579,6 +600,33 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         [sortedRooms]
     );
 
+    const availableGroupRooms = useMemo(
+        () => sortedRooms.filter((room) => room.status === 'AVAILABLE' && !room.stay),
+        [sortedRooms]
+    );
+
+    const pendingTransferRooms = useMemo(
+        () => sortedRooms.filter((room) => room.status === 'OCCUPIED' && (room.stay?.onlinePaid ?? 0) > 0),
+        [sortedRooms]
+    );
+
+    const pendingTransferTotal = useMemo(
+        () => pendingTransferRooms.reduce((total, room) => total + (room.stay?.onlinePaid ?? 0), 0),
+        [pendingTransferRooms]
+    );
+
+    const selectedGroupRooms = useMemo(
+        () => groupCheckIn ? availableGroupRooms.filter((room) => groupCheckIn.roomIds.includes(room.id)) : [],
+        [availableGroupRooms, groupCheckIn]
+    );
+
+    const groupTotalMinor = useMemo(() => {
+        const total = Number(groupCheckIn?.totalAmount || 0);
+        return Number.isFinite(total) && total > 0 ? Math.round(total * 100) : 0;
+    }, [groupCheckIn?.totalAmount]);
+
+    const groupPerRoomMinor = selectedGroupRooms.length ? Math.floor(groupTotalMinor / selectedGroupRooms.length) : 0;
+
     const occupiedCount = useMemo(() => sortedRooms.filter((r) => r.status === 'OCCUPIED').length, [sortedRooms]);
     const overdueCount = useMemo(() => {
         const now = new Date();
@@ -809,6 +857,134 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         });
         toast('Гость выселен', 'success');
         mutate();
+    };
+
+    const showGroupCheckInModal = () => {
+        if (!data?.shift) {
+            toast('Сначала откройте смену, чтобы сделать групповой заезд', 'error');
+            return;
+        }
+        if (!availableGroupRooms.length) {
+            toast('Нет свободных номеров для группового заезда', 'error');
+            return;
+        }
+
+        const startDate = new Date();
+        const endDate = new Date(startDate.getTime() + 12 * 60 * 60 * 1000);
+
+        setGroupCheckIn({
+            guestName: '',
+            guestCount: '',
+            checkIn: formatDateInputValue(startDate),
+            checkOut: formatDateInputValue(endDate),
+            totalAmount: '',
+            paymentMode: 'PENDING_TRANSFER',
+            notes: '',
+            roomIds: [],
+        });
+        setGroupCheckInError(null);
+    };
+
+    const toggleGroupRoom = (roomId: string) => {
+        setGroupCheckIn((prev) => {
+            if (!prev) return prev;
+            const roomIds = prev.roomIds.includes(roomId)
+                ? prev.roomIds.filter((id) => id !== roomId)
+                : [...prev.roomIds, roomId];
+            return { ...prev, roomIds };
+        });
+    };
+
+    const handleGroupCheckIn = async () => {
+        if (!groupCheckIn || !data?.shift || !data.hotel.id) return;
+
+        const scheduledCheckIn = parseInputValue(groupCheckIn.checkIn, hotelTz);
+        const scheduledCheckOut = parseInputValue(groupCheckIn.checkOut, hotelTz);
+        const totalValue = Number(groupCheckIn.totalAmount || 0);
+        const guestCount = groupCheckIn.guestCount ? Number(groupCheckIn.guestCount) : undefined;
+
+        if (!groupCheckIn.roomIds.length) {
+            setGroupCheckInError('Выберите номера для группы');
+            return;
+        }
+        if (!scheduledCheckIn || !scheduledCheckOut || scheduledCheckOut <= scheduledCheckIn) {
+            setGroupCheckInError('Проверьте даты заезда и выезда');
+            return;
+        }
+        if (!Number.isFinite(totalValue) || totalValue <= 0) {
+            setGroupCheckInError('Укажите общую сумму оплаты');
+            return;
+        }
+        if (guestCount !== undefined && (!Number.isInteger(guestCount) || guestCount <= 0)) {
+            setGroupCheckInError('Количество гостей должно быть целым числом');
+            return;
+        }
+
+        setIsSubmittingGroupCheckIn(true);
+        try {
+            await request('/api/rooms/group-stay', {
+                body: {
+                    action: 'group-checkin',
+                    hotelId: data.hotel.id,
+                    shiftId: data.shift.id,
+                    roomIds: groupCheckIn.roomIds,
+                    guestName: groupCheckIn.guestName.trim() || undefined,
+                    guestCount,
+                    scheduledCheckIn: scheduledCheckIn.toISOString(),
+                    scheduledCheckOut: scheduledCheckOut.toISOString(),
+                    totalAmount: toMinor(totalValue),
+                    paymentMode: groupCheckIn.paymentMode,
+                    notes: groupCheckIn.notes.trim() || undefined,
+                },
+            });
+            toast('Групповой заезд создан', 'success');
+            setGroupCheckIn(null);
+            setGroupCheckInError(null);
+            mutate();
+        } catch (error) {
+            console.error(error);
+            setGroupCheckInError(error instanceof Error ? error.message : 'Не удалось создать групповой заезд');
+        } finally {
+            setIsSubmittingGroupCheckIn(false);
+        }
+    };
+
+    const showConfirmTransfersModal = () => {
+        if (!data?.shift) {
+            toast('Сначала откройте смену, чтобы подтвердить перевод', 'error');
+            return;
+        }
+        const stayIds = pendingTransferRooms.map((room) => room.stay?.id).filter((id): id is string => Boolean(id));
+        if (!stayIds.length) {
+            toast('Нет ожидающих переводов', 'error');
+            return;
+        }
+        setConfirmTransfers({ stayIds });
+        setConfirmTransfersError(null);
+    };
+
+    const handleConfirmTransfers = async () => {
+        if (!confirmTransfers || !data?.shift || !data.hotel.id) return;
+        setIsConfirmingTransfers(true);
+        try {
+            await request('/api/rooms/group-stay', {
+                body: {
+                    action: 'confirm-transfer',
+                    hotelId: data.hotel.id,
+                    shiftId: data.shift.id,
+                    stayIds: confirmTransfers.stayIds,
+                },
+            });
+            toast('Переводы подтверждены', 'success');
+            setConfirmTransfers(null);
+            setConfirmTransfersError(null);
+            mutate();
+        } catch (error) {
+            console.error(error);
+            setConfirmTransfersError(error instanceof Error ? error.message : 'Не удалось подтвердить переводы');
+        } finally {
+            setIsConfirmingTransfers(false);
+        }
     };
 
     const showCheckInModal = (room: ManagerStateResponse['rooms'][number]) => {
@@ -1316,7 +1492,31 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                             <section className="space-y-2.5 sm:space-y-3">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                     <h2 className="text-lg font-semibold text-light-text dark:text-white">Номера</h2>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex flex-wrap items-center justify-end gap-2">
+                                        <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="secondary"
+                                            className="gap-1.5"
+                                            disabled={!hasOpenShift || !availableGroupRooms.length}
+                                            onClick={showGroupCheckInModal}
+                                        >
+                                            <Users className="h-4 w-4" aria-hidden="true" />
+                                            Групповой заезд
+                                        </Button>
+                                        {pendingTransferRooms.length ? (
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="secondary"
+                                                className="gap-1.5 border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200"
+                                                disabled={!hasOpenShift}
+                                                onClick={showConfirmTransfersModal}
+                                            >
+                                                <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                                                Подтвердить {formatKgs(pendingTransferTotal)}
+                                            </Button>
+                                        ) : null}
                                         <div className="flex rounded-xl border border-slate-200 bg-white p-1 text-xs font-medium text-slate-700 shadow-sm dark:border-white/[0.055] dark:bg-white/[0.05] dark:text-white/50">
                                             <button
                                                 type="button"
@@ -1494,7 +1694,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             const segments = [] as string[];
                                             if (cashPortion) segments.push(`нал ${formatKgs(cashPortion)}`);
                                             if (cardPortion) segments.push(`безнал ${formatKgs(cardPortion)}`);
-                                            if (onlinePortion) segments.push(`сайт ${formatKgs(onlinePortion)}`);
+                                            if (onlinePortion) segments.push(`ожидает ${formatKgs(onlinePortion)}`);
                                             if (!segments.length && room.stay?.paymentMethod) {
                                                 return room.stay.paymentMethod === 'CARD' ? 'Безнал' : 'Наличные';
                                             }
@@ -2045,6 +2245,193 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     )}
                                 </div>
                             </div>
+                        </div>
+                    )}
+
+                    {groupCheckIn && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-2 sm:p-4">
+                            <div className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded-xl bg-ink p-3 text-white shadow-2xl sm:rounded-2xl sm:p-5">
+                                <div className="mb-3 flex items-center justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/35">Группа</p>
+                                        <h3 className="mt-1 text-base font-semibold">Групповой заезд</h3>
+                                    </div>
+                                    <Button type="button" variant="ghost" size="sm" disabled={isSubmittingGroupCheckIn} onClick={() => setGroupCheckIn(null)}>
+                                        ×
+                                    </Button>
+                                </div>
+
+                                <div className="space-y-3">
+                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                        <div className="sm:col-span-2">
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-guest-name">Название группы</label>
+                                            <Input
+                                                id="group-guest-name"
+                                                value={groupCheckIn.guestName}
+                                                onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, guestName: event.target.value } : prev)}
+                                                placeholder="Футбольная команда"
+                                                className="text-white"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-guest-count">Гостей</label>
+                                            <Input
+                                                id="group-guest-count"
+                                                type="number"
+                                                min="1"
+                                                step="1"
+                                                value={groupCheckIn.guestCount}
+                                                onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, guestCount: event.target.value } : prev)}
+                                                placeholder="13"
+                                                className="text-white"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                        <div>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-checkin">Заезд</label>
+                                            <Input
+                                                id="group-checkin"
+                                                type="datetime-local"
+                                                value={groupCheckIn.checkIn}
+                                                onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, checkIn: event.target.value } : prev)}
+                                                className="text-white"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-checkout">Выезд</label>
+                                            <Input
+                                                id="group-checkout"
+                                                type="datetime-local"
+                                                value={groupCheckIn.checkOut}
+                                                onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, checkOut: event.target.value } : prev)}
+                                                className="text-white"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                        <div>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-total">Общая сумма</label>
+                                            <Input
+                                                id="group-total"
+                                                type="number"
+                                                min="0"
+                                                step="0.01"
+                                                inputMode="decimal"
+                                                value={groupCheckIn.totalAmount}
+                                                onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, totalAmount: event.target.value } : prev)}
+                                                placeholder="120000"
+                                                className="text-white"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-payment-mode">Оплата</label>
+                                            <Select
+                                                id="group-payment-mode"
+                                                value={groupCheckIn.paymentMode}
+                                                onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, paymentMode: event.target.value as GroupCheckInState['paymentMode'] } : prev)}
+                                                className="text-white"
+                                            >
+                                                <option value="PENDING_TRANSFER">Перевод ожидается</option>
+                                                <option value="CARD">Перевод уже пришёл</option>
+                                                <option value="CASH">Наличными</option>
+                                            </Select>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <div className="mb-2 flex items-center justify-between gap-3">
+                                            <label className="text-[11px] text-white/40">Номера</label>
+                                            <span className="text-[11px] text-white/35">{selectedGroupRooms.length} выбрано · {groupPerRoomMinor ? `${formatKgs(groupPerRoomMinor)} / номер` : 'сумма не указана'}</span>
+                                        </div>
+                                        <div className="grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-4">
+                                            {availableGroupRooms.map((room) => {
+                                                const checked = groupCheckIn.roomIds.includes(room.id);
+                                                return (
+                                                    <label
+                                                        key={`group-room-${room.id}`}
+                                                        className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${checked ? 'border-emerald-400/40 bg-emerald-400/12 text-emerald-100' : 'border-white/[0.08] bg-white/[0.04] text-white/75 hover:bg-white/[0.07]'}`}
+                                                    >
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={checked}
+                                                            onChange={() => toggleGroupRoom(room.id)}
+                                                            className="accent-emerald-500"
+                                                        />
+                                                        <span className="truncate">№ {room.label}</span>
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-notes">Комментарий</label>
+                                        <TextArea
+                                            id="group-notes"
+                                            rows={2}
+                                            value={groupCheckIn.notes}
+                                            onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, notes: event.target.value } : prev)}
+                                            placeholder="Например: оплата банковским переводом позже"
+                                            className="text-white"
+                                        />
+                                    </div>
+
+                                    {groupCheckIn.paymentMode === 'PENDING_TRANSFER' ? (
+                                        <p className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+                                            Сумма будет распределена по выбранным номерам и останется в ожидании. Когда перевод придёт, подтвердите его одной кнопкой в списке номеров.
+                                        </p>
+                                    ) : null}
+
+                                    {groupCheckInError && <p className="text-xs text-rose-300">{groupCheckInError}</p>}
+
+                                    <Button type="button" className="w-full py-3" disabled={isSubmittingGroupCheckIn} onClick={handleGroupCheckIn}>
+                                        {isSubmittingGroupCheckIn ? 'Создаём...' : 'Создать групповой заезд'}
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {confirmTransfers && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm">
+                            <Card className="w-full max-w-md space-y-4 border-white/[0.08] bg-ink p-5 text-white shadow-2xl dark:bg-ink">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/40">Перевод</p>
+                                        <h3 className="mt-1 text-lg font-semibold">Подтвердить поступление</h3>
+                                    </div>
+                                    <Button type="button" variant="ghost" size="sm" disabled={isConfirmingTransfers} onClick={() => setConfirmTransfers(null)}>
+                                        ×
+                                    </Button>
+                                </div>
+                                <div className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-sm text-white/75">
+                                    <p>Номеров: <span className="font-semibold text-white">{pendingTransferRooms.length}</span></p>
+                                    <p className="mt-1">Сумма: <span className="font-semibold text-white">{formatKgs(pendingTransferTotal)}</span></p>
+                                    <p className="mt-2 text-xs text-white/45">
+                                        После подтверждения сумма попадёт в безналичную кассу текущей смены.
+                                    </p>
+                                </div>
+                                <div className="max-h-40 space-y-1 overflow-y-auto text-xs text-white/55">
+                                    {pendingTransferRooms.map((room) => (
+                                        <div key={`pending-transfer-${room.id}`} className="flex items-center justify-between rounded-lg bg-white/[0.035] px-3 py-2">
+                                            <span>№ {room.label}</span>
+                                            <span>{formatKgs(room.stay?.onlinePaid ?? 0)}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                                {confirmTransfersError && <p className="text-xs text-rose-300">{confirmTransfersError}</p>}
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                    <Button type="button" variant="secondary" disabled={isConfirmingTransfers} onClick={() => setConfirmTransfers(null)}>
+                                        Отмена
+                                    </Button>
+                                    <Button type="button" disabled={isConfirmingTransfers} onClick={handleConfirmTransfers}>
+                                        {isConfirmingTransfers ? 'Подтверждаем...' : 'Подтвердить все'}
+                                    </Button>
+                                </div>
+                            </Card>
                         </div>
                     )}
 
