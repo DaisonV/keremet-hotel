@@ -379,6 +379,8 @@ function BusinessTargetCard({
     currency?: string;
     hotelLabel?: string;
 }) {
+    const [helpOpen, setHelpOpen] = useState(false);
+
     if (!target) return null;
 
     const breakdown = [
@@ -389,21 +391,37 @@ function BusinessTargetCard({
         { label: "Прочее", value: target.costs.other },
     ];
     const hasPlan = target.monthlyRequiredRevenue > 0;
+    const helpText = hasPlan
+        ? `Показывает, сколько нужно заработать за ${target.periodLabel}, чтобы закрыть основные ежемесячные затраты.`
+        : "Заполни в управлении объектом ежемесячные ориентиры по зарплатам, аренде, коммуналке, хозтоварам и прочим тратам. Тогда сводка начнет показывать, сколько выручки нужно в месяц и какой темп нужен до конца месяца.";
 
     return (
         <Card className="col-span-1 lg:col-span-4 overflow-hidden p-4 text-light-text dark:text-white lg:p-5">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0 max-w-3xl">
-                    <p className="text-[11px] uppercase tracking-[0.22em] text-slate-600 dark:text-white/30">Финансовый ориентир</p>
-                    <h3 className="mt-1 text-base font-semibold text-slate-900 dark:text-white sm:text-lg">
-                        {hotelLabel ? `План для ${hotelLabel}` : `План по объектам: ${target.hotelsInScope}`}
-                    </h3>
-                    <p className="mt-1 text-sm text-slate-500 dark:text-white/45">
-                        {hasPlan
-                            ? `Показывает, сколько нужно заработать за ${target.periodLabel}, чтобы закрыть основные ежемесячные затраты.`
-                            : "Добавь ежемесячные затраты по объектам, и здесь появится ориентир по выручке и темпу."}
-                    </p>
-                    {hasPlan ? (
+                    <div className="flex items-start gap-2">
+                        <div className="min-w-0">
+                            <p className="text-[11px] uppercase tracking-[0.22em] text-slate-600 dark:text-white/30">Финансовый ориентир</p>
+                            <h3 className="mt-1 text-base font-semibold text-slate-900 dark:text-white sm:text-lg">
+                                {hotelLabel ? `План для ${hotelLabel}` : `План по объектам: ${target.hotelsInScope}`}
+                            </h3>
+                        </div>
+                        <button
+                            type="button"
+                            className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 transition hover:border-slate-300 hover:bg-white hover:text-slate-800 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white/45 dark:hover:bg-white/[0.08] dark:hover:text-white"
+                            onClick={() => setHelpOpen((current) => !current)}
+                            aria-label="Пояснение финансового ориентира"
+                            aria-expanded={helpOpen}
+                        >
+                            ?
+                        </button>
+                    </div>
+                    {helpOpen ? (
+                        <p className="mt-2 max-w-2xl rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:border-white/[0.06] dark:bg-white/[0.03] dark:text-white/45">
+                            {helpText}
+                        </p>
+                    ) : null}
+                    {hasPlan && helpOpen ? (
                         <p className="mt-2 text-xs text-slate-500 dark:text-white/40">
                             {target.mixedCycleDays
                                 ? "У объектов разные даты начала расчетного месяца. Сводка считает каждый филиал по его собственному периоду."
@@ -466,11 +484,7 @@ function BusinessTargetCard({
                         ))}
                     </div>
                 </>
-            ) : (
-                <div className="mt-4 rounded-3xl border border-dashed border-slate-200/80 px-4 py-5 text-sm text-slate-500 dark:border-white/[0.06] dark:text-white/45">
-                    Заполни в управлении объектом ежемесячные ориентиры по зарплатам, аренде, коммуналке, хозтоварам и прочим тратам. Тогда сводка начнет показывать, сколько выручки нужно в месяц и какой темп нужен до конца месяца.
-                </div>
-            )}
+            ) : null}
         </Card>
     );
 }
