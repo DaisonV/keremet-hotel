@@ -1860,20 +1860,20 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
     return (
         <>
             <div className="flex min-h-screen flex-col gap-3 px-3 pb-24 pt-3 sm:gap-6 sm:px-6 sm:pt-6">
-                <Card className="overflow-hidden border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.14),_rgba(255,255,255,0.05)_42%,_rgba(7,10,18,0.88)_100%)] p-0 dark:border-white/10 dark:bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.12),_rgba(255,255,255,0.04)_42%,_rgba(7,10,18,0.92)_100%)]">
+                <Card className="overflow-hidden border-slate-200 bg-[linear-gradient(135deg,_#ffffff_0%,_#f8fafc_45%,_#e8eef7_100%)] p-0 shadow-[0_24px_70px_-42px_rgba(15,23,42,0.45)] dark:border-white/10 dark:bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.12),_rgba(255,255,255,0.04)_42%,_rgba(7,10,18,0.92)_100%)] dark:shadow-none">
                     <div className="flex flex-col gap-4 px-3.5 py-4 sm:gap-6 sm:px-6 sm:py-6">
                         <div className="flex flex-wrap items-start justify-between gap-3 sm:gap-4">
                             <div className="min-w-0 space-y-3">
-                                <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.24em] text-white/45">
+                                <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.24em] text-slate-500 dark:text-white/45">
                                     <span>Объект</span>
                                     {data.timezone && <span>{data.timezone}</span>}
                                     {hotelCur && <span>{hotelCur}</span>}
                                 </div>
                                 <div className="space-y-2">
-                                    <h1 className="break-words text-xl font-semibold tracking-tight text-white sm:text-4xl">{data.name}</h1>
-                                    <p className="max-w-2xl text-sm text-white/65 sm:text-base">{data.address}</p>
+                                    <h1 className="break-words text-xl font-semibold tracking-tight text-slate-950 sm:text-4xl dark:text-white">{data.name}</h1>
+                                    <p className="max-w-2xl text-sm text-slate-600 sm:text-base dark:text-white/65">{data.address}</p>
                                 </div>
-                                <div className="flex flex-wrap gap-2 text-xs text-white/70">
+                                <div className="flex flex-wrap gap-2 text-xs text-slate-700 dark:text-white/70">
                                     <Badge label={activeShiftLabel} tone={data.activeShift ? 'warning' : 'default'} />
                                     <Badge label={`${data.roomCount} номеров`} />
                                     <Badge label={`${managerCount} менеджеров`} />
@@ -1898,18 +1898,18 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                             {summaryCards.map((item) => (
                                 <div
                                     key={item.label}
-                                    className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.045] px-3 py-3 shadow-[0_14px_34px_-32px_rgba(15,23,42,0.75)] backdrop-blur sm:rounded-[24px] sm:px-4 sm:py-4"
+                                    className="min-w-0 rounded-2xl border border-slate-200 bg-white/82 px-3 py-3 shadow-[0_14px_34px_-32px_rgba(15,23,42,0.45)] backdrop-blur sm:rounded-[24px] sm:px-4 sm:py-4 dark:border-white/10 dark:bg-white/[0.045] dark:shadow-[0_14px_34px_-32px_rgba(15,23,42,0.75)]"
                                 >
-                                    <p className="text-[11px] uppercase tracking-[0.22em] text-white/40">{item.label}</p>
-                                    <p className="mt-2 break-words text-lg font-semibold tracking-tight text-white sm:mt-3 sm:text-xl">{item.value}</p>
-                                    <p className="mt-1 break-words text-xs text-white/55 sm:text-sm">
+                                    <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500 dark:text-white/40">{item.label}</p>
+                                    <p className="mt-2 break-words text-lg font-semibold tracking-tight text-slate-950 sm:mt-3 sm:text-xl dark:text-white">{item.value}</p>
+                                    <p className="mt-1 break-words text-xs text-slate-600 sm:text-sm dark:text-white/55">
                                         {item.caption}
                                         {item.label === 'Касса' ? (
                                             <>
                                                 {' · '}
                                                 <button
                                                     type="button"
-                                                    className={`rounded-lg px-1.5 py-0.5 font-semibold transition ${pendingOnlineValue > 0 ? 'text-amber-200 hover:bg-amber-300/10 hover:text-amber-100' : 'cursor-default text-white/40'}`}
+                                                    className={`rounded-lg px-1.5 py-0.5 font-semibold transition ${pendingOnlineValue > 0 ? 'text-amber-700 hover:bg-amber-100 hover:text-amber-800 dark:text-amber-200 dark:hover:bg-amber-300/10 dark:hover:text-amber-100' : 'cursor-default text-slate-400 dark:text-white/40'}`}
                                                     onClick={() => pendingOnlineValue > 0 && setIsPendingOnlineHistoryOpen((current) => !current)}
                                                     disabled={pendingOnlineValue <= 0}
                                                     aria-expanded={isPendingOnlineHistoryOpen}
@@ -1923,13 +1923,13 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                             ))}
                         </div>
                         {isPendingOnlineHistoryOpen ? (
-                        <div className="rounded-2xl border border-amber-300/20 bg-amber-400/10 p-3.5 text-amber-50 sm:rounded-[24px] sm:p-4">
+                        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3.5 text-amber-800 sm:rounded-[24px] sm:p-4 dark:border-amber-300/20 dark:bg-amber-400/10 dark:text-amber-50">
                                 <div className="flex flex-wrap items-start justify-between gap-3">
                                     <div>
                                         <p className="text-[11px] uppercase tracking-[0.22em] text-amber-100/60">Ожидающие поступления</p>
                                         <p className="mt-1 text-lg font-semibold">{formatCurrency(pendingOnlineValue)}</p>
                                     </div>
-                                    <Button type="button" variant="ghost" size="sm" className="text-amber-50 hover:bg-amber-300/10 hover:text-white" onClick={() => setIsPendingOnlineHistoryOpen(false)}>
+                                    <Button type="button" variant="ghost" size="sm" className="text-amber-700 hover:bg-amber-100 hover:text-amber-900 dark:text-amber-50 dark:hover:bg-amber-300/10 dark:hover:text-white" onClick={() => setIsPendingOnlineHistoryOpen(false)}>
                                         Скрыть
                                     </Button>
                                 </div>
@@ -1946,19 +1946,19 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                             ].filter(Boolean).join(' · ');
 
                                             return (
-                                                <div key={`pending-online-${stay.id}`} className="rounded-2xl border border-amber-200/20 bg-black/15 px-3 py-3">
+                                                <div key={`pending-online-${stay.id}`} className="rounded-2xl border border-amber-200/80 bg-white px-3 py-3 dark:border-amber-200/20 dark:bg-black/15">
                                                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                                         <div className="min-w-0">
                                                             <div className="flex flex-wrap items-center gap-2">
-                                                                <span className="rounded-lg bg-white/10 px-2 py-1 text-xs font-semibold">№ {stay.roomLabel}</span>
-                                                                <span className="text-sm font-semibold text-white">{guestLabel}</span>
+                                                                <span className="rounded-lg bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800 dark:bg-white/10 dark:text-amber-50">№ {stay.roomLabel}</span>
+                                                                <span className="text-sm font-semibold text-slate-950 dark:text-white">{guestLabel}</span>
                                                                 <Badge label={stayStatusLabels[stay.status]} tone={stayStatusTone[stay.status]} />
                                                             </div>
-                                                            <p className="mt-2 text-xs text-amber-50/70">
+                                                            <p className="mt-2 text-xs text-amber-700 dark:text-amber-50/70">
                                                                 {formatStayDate(stay.actualCheckIn ?? stay.scheduledCheckIn)} — {formatStayDate(stay.actualCheckOut ?? stay.scheduledCheckOut)}
                                                             </p>
-                                                            {detailLine ? <p className="mt-1 text-xs text-amber-50/55">{detailLine}</p> : null}
-                                                            {stay.notes?.trim() ? <p className="mt-1 text-xs text-amber-50/55">{stay.notes.trim()}</p> : null}
+                                                            {detailLine ? <p className="mt-1 text-xs text-amber-700/75 dark:text-amber-50/55">{detailLine}</p> : null}
+                                                            {stay.notes?.trim() ? <p className="mt-1 text-xs text-amber-700/75 dark:text-amber-50/55">{stay.notes.trim()}</p> : null}
                                                         </div>
                                                         <div className="flex shrink-0 items-center justify-between gap-3 sm:flex-col sm:items-end">
                                                             <span className="text-sm font-semibold text-amber-100">{formatCurrency(stay.onlinePaid ?? 0)}</span>
@@ -1966,7 +1966,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                                 type="button"
                                                                 variant="secondary"
                                                                 size="sm"
-                                                                className="border-amber-300/50 bg-white/10 text-amber-50 hover:bg-amber-300/15 hover:text-white"
+                                                                className="border-amber-300/80 bg-white text-amber-700 hover:bg-amber-100 hover:text-amber-900 dark:border-amber-300/50 dark:bg-white/10 dark:text-amber-50 dark:hover:bg-amber-300/15 dark:hover:text-white"
                                                                 disabled={confirmingOnlineStayId === stay.id}
                                                                 onClick={() => handleConfirmOnlinePayment({ id: stay.roomId }, stay)}
                                                             >
@@ -1979,7 +1979,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                         })}
                                     </div>
                                 ) : (
-                                    <p className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-amber-50/70">
+                                    <p className="mt-4 rounded-2xl border border-amber-200/80 bg-white px-3 py-3 text-sm text-amber-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-amber-50/70">
                                         Ожидающих поступлений нет.
                                     </p>
                                 )}
@@ -2038,7 +2038,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                             <div className="space-y-4">
                                                 <div className="flex flex-wrap items-start justify-between gap-4 rounded-[24px] border border-slate-200/80 bg-slate-50/90 p-4 dark:border-white/[0.06] dark:bg-white/[0.03]">
                                                     <div>
-                                                        <div className="flex flex-wrap items-center gap-2 text-xs text-white/70">
+                                                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-white/70">
                                                             <Badge label={`Смена №${selectedShift.number}`} />
                                                             <Badge
                                                                 label={selectedShift.status === 'CLOSED' ? 'Закрыта' : 'Открыта'}
@@ -2054,7 +2054,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                     </div>
                                                     <div className="rounded-2xl border border-slate-200/80 bg-white px-4 py-3 text-right dark:border-white/[0.06] dark:bg-white/[0.04]">
                                                         <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400 dark:text-white/35">Статус кассы</p>
-                                                        <p className="mt-2 text-2xl font-semibold text-emerald-300">{selectedShiftCash ? formatCurrency(selectedShiftCash.currentCash) : '—'}</p>
+                                                        <p className="mt-2 text-2xl font-semibold text-emerald-600 dark:text-emerald-300">{selectedShiftCash ? formatCurrency(selectedShiftCash.currentCash) : '—'}</p>
                                                         {selectedShift.handoverCash != null && (
                                                             <p className="mt-1 text-xs text-slate-500 dark:text-white/50">Передано {formatShiftAmount(selectedShift.handoverCash)}</p>
                                                         )}
