@@ -628,6 +628,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
     const groupPerRoomMinor = selectedGroupRooms.length ? Math.floor(groupTotalMinor / selectedGroupRooms.length) : 0;
 
     const occupiedCount = useMemo(() => sortedRooms.filter((r) => r.status === 'OCCUPIED').length, [sortedRooms]);
+    const availableCount = useMemo(() => sortedRooms.filter((r) => r.status === 'AVAILABLE').length, [sortedRooms]);
     const overdueCount = useMemo(() => {
         const now = new Date();
         return sortedRooms.filter((room) => room.status === 'OCCUPIED' && isPastDate(room.stay?.scheduledCheckOut, now)).length;
@@ -759,12 +760,6 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             });
         }
     }, [data?.shift, handoverForm]);
-
-    useEffect(() => {
-        if (!data?.shift && activePanel === 'rooms') {
-            setActivePanel('shift');
-        }
-    }, [data?.shift, activePanel]);
 
     useEffect(() => {
         setIsCashLedgerOpen(false);
@@ -1534,6 +1529,25 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             </button>
                                         </div>
                                         <Badge label={`${sortedRooms.length} в учёте`} />
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                    <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-[0_10px_24px_-22px_rgba(15,23,42,0.34)] dark:border-white/[0.055] dark:bg-white/[0.035]">
+                                        <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500 dark:text-white/30">Свободно</p>
+                                        <p className="mt-1 text-base font-semibold text-light-text dark:text-white">{availableCount}</p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        className={`rounded-2xl border px-3 py-2 text-left shadow-[0_10px_24px_-22px_rgba(15,23,42,0.34)] transition ${pendingTransferRooms.length ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200' : 'border-slate-200 bg-white text-slate-500 dark:border-white/[0.055] dark:bg-white/[0.035] dark:text-white/40'}`}
+                                        disabled={!pendingTransferRooms.length}
+                                        onClick={showConfirmTransfersModal}
+                                    >
+                                        <p className="text-[10px] uppercase tracking-[0.18em]">Ожидает перевода</p>
+                                        <p className="mt-1 text-base font-semibold">{pendingTransferRooms.length ? formatKgs(pendingTransferTotal) : '0'}</p>
+                                    </button>
+                                    <div className={`rounded-2xl border px-3 py-2 shadow-[0_10px_24px_-22px_rgba(15,23,42,0.34)] ${overdueCount ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/15 dark:bg-rose-500/15 dark:text-rose-300' : 'border-slate-200 bg-white text-slate-500 dark:border-white/[0.055] dark:bg-white/[0.035] dark:text-white/40'}`}>
+                                        <p className="text-[10px] uppercase tracking-[0.18em]">Просрочено</p>
+                                        <p className="mt-1 text-base font-semibold">{overdueCount}</p>
                                     </div>
                                 </div>
                                 {roomViewMode === 'board' ? (
