@@ -15,7 +15,7 @@ import { useCookieApi } from '@/hooks/useCookieApi';
 import { formatDateKey, formatDateTime, formatInputValue, parseInputValue, formatMoney } from '@/lib/timezone';
 import { isCollectionLedgerEntry } from '@/lib/ledger';
 import { MEAL_PLAN_OPTIONS, mealPlanLabels } from '@/lib/meal-plan';
-import { ArrowRightLeft, Banknote, CalendarPlus, CheckCircle2, LogIn, LogOut, Users } from 'lucide-react';
+import { ArrowRightLeft, Banknote, CalendarPlus, CheckCircle2, LogIn, LogOut, Sparkles, Users } from 'lucide-react';
 
 type ManagerRoomStay = {
     id: string;
@@ -348,6 +348,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         stay: ManagerRoomStay;
     } | null>(null);
     const [isCancellingBooking, setIsCancellingBooking] = useState(false);
+    const [updatingCleaningRoomId, setUpdatingCleaningRoomId] = useState<string | null>(null);
     const [checkoutConfirm, setCheckoutConfirm] = useState<{ roomId: string; roomLabel: string; guestName: string } | null>(null);
     const { toast } = useToast();
     const {
@@ -1108,6 +1109,10 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             toast('Сначала откройте смену, чтобы заселить гостя', 'error');
             return;
         }
+        if (room.status !== 'AVAILABLE') {
+            toast(room.status === 'DIRTY' ? 'Сначала отметьте номер убранным' : 'Номер сейчас не свободен для заселения', 'error');
+            return;
+        }
 
         const startDate = room.stay?.scheduledCheckIn ? new Date(room.stay.scheduledCheckIn) : new Date();
         const endDate = room.stay?.scheduledCheckOut
@@ -1264,6 +1269,28 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             toast('Не удалось отменить бронь', 'error');
         } finally {
             setIsCancellingBooking(false);
+        }
+    };
+
+    const handleToggleCleaningStatus = async (room: ManagerStateResponse['rooms'][number]) => {
+        if (room.status !== 'DIRTY') {
+            toast('Отметить убранным можно только номер в статусе уборки', 'error');
+            return;
+        }
+
+        setUpdatingCleaningRoomId(room.id);
+        try {
+            await request(`/api/rooms/${room.id}/cleaning`, {
+                method: 'PATCH',
+                body: { status: 'AVAILABLE' }
+            });
+            toast(`№ ${room.label} отмечен убранным`, 'success');
+            await mutate();
+        } catch (error) {
+            console.error(error);
+            toast(error instanceof Error ? error.message : 'Не удалось обновить уборку', 'error');
+        } finally {
+            setUpdatingCleaningRoomId(null);
         }
     };
 
@@ -1961,10 +1988,24 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                 <div className="flex flex-col gap-2.5">
                                                     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                                                         <span className="min-w-0 break-words text-sm font-semibold text-light-text dark:text-white">№ {room.label}</span>
-                                                        <Badge
-                                                            label={isOverdue ? 'Просрочено' : isOccupied ? 'Занят' : room.status === 'DIRTY' ? 'Уборка' : 'Свободен'}
-                                                            tone={isOverdue ? 'danger' : isOccupied ? 'warning' : 'success'}
-                                                        />
+                                                        {room.status === 'DIRTY' ? (
+                                                            <button
+                                                                type="button"
+                                                                className="inline-flex items-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-700 transition hover:bg-emerald-50 hover:text-emerald-700 disabled:pointer-events-none disabled:opacity-50 dark:border-rose-500/15 dark:bg-rose-500/15 dark:text-rose-400 dark:hover:bg-emerald-500/15 dark:hover:text-emerald-300"
+                                                                disabled={updatingCleaningRoomId === room.id}
+                                                                onClick={() => handleToggleCleaningStatus(room)}
+                                                                title="Нажмите, чтобы отметить номер убранным"
+                                                                aria-label={`Отметить номер ${room.label} убранным`}
+                                                            >
+                                                                <Sparkles className="h-3 w-3" aria-hidden="true" />
+                                                                {updatingCleaningRoomId === room.id ? '...' : 'Уборка'}
+                                                            </button>
+                                                        ) : (
+                                                            <Badge
+                                                                label={isOverdue ? 'Просрочено' : isOccupied ? 'Занят' : 'Свободен'}
+                                                                tone={isOverdue ? 'danger' : isOccupied ? 'warning' : 'success'}
+                                                            />
+                                                        )}
                                                     </div>
                                                     {isOccupied ? (
                                                         <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -2019,7 +2060,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                             </Button>
                                                         </div>
                                                     ) : (
-                                                        <div className="flex items-center justify-end gap-1.5">
+                                                        <div className="flex flex-wrap items-center justify-end gap-1.5">
                                                             <Button
                                                                 type="button"
                                                                 size="icon"
@@ -2036,9 +2077,9 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                                 size="icon"
                                                                 variant="secondary"
                                                                 className="h-8 w-8 rounded-xl"
-                                                                disabled={!hasOpenShift}
+                                                                disabled={!hasOpenShift || room.status !== 'AVAILABLE'}
                                                                 onClick={() => showCheckInModal(room)}
-                                                                title="Заселить"
+                                                                title={room.status === 'DIRTY' ? 'Сначала отметьте номер убранным' : 'Заселить'}
                                                                 aria-label={`Заселить номер ${room.label}`}
                                                             >
                                                                 <LogIn className="h-4 w-4" aria-hidden="true" />
@@ -3152,7 +3193,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     <Button
                                         type="button"
                                         className="w-full"
-                                        disabled={!hasOpenShift}
+                                        disabled={!hasOpenShift || boardDayAction.room.status !== 'AVAILABLE'}
                                         onClick={() => {
                                             const room = boardDayAction.room;
                                             setBoardDayAction(null);
@@ -3268,6 +3309,9 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                 ) : null}
                                 {!hasOpenShift ? (
                                     <p className="text-center text-[11px] text-white/40">Для заселения сначала откройте смену.</p>
+                                ) : null}
+                                {hasOpenShift && boardDayAction?.room.status === 'DIRTY' ? (
+                                    <p className="text-center text-[11px] text-white/40">Сначала отметьте номер убранным.</p>
                                 ) : null}
                             </Card>
                         </div>

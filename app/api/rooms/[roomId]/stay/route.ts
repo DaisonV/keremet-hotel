@@ -403,6 +403,10 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                 return new NextResponse('Номер сейчас не свободен для заселения', { status: 409 });
             }
 
+            if (!scheduledStay && (room.status !== RoomStatus.AVAILABLE || room.currentStayId)) {
+                return new NextResponse('Номер сейчас не свободен для заселения', { status: 409 });
+            }
+
             const nextCashAmount = (scheduledStay?.cashPaid ?? 0) + cashAmount;
             const nextCardAmount = (scheduledStay?.cardPaid ?? 0) + cardAmount;
             const nextOnlineAmount = (scheduledStay?.onlinePaid ?? 0) + onlineAmount;
