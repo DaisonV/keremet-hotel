@@ -9,6 +9,7 @@ import { notifyCleaningCrew, notifyCleaningCrewAboutCheckIn } from '@/lib/server
 import { buildCleaningRoomSnapshotLines } from '@/lib/server/cleaning-rooms';
 import { getCountryFromRequest } from '@/lib/server/request-country';
 import { detectStayPaymentMethod, normalizeBookingSource, resolveBookingSource, sumStayPayments } from '@/lib/stays';
+import { normalizeMealPlan } from '@/lib/meal-plan';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,7 @@ const updateStaySchema = z
         onlinePaid: z.number().int().min(0).optional(),
         paymentMethod: z.nativeEnum(PaymentMethod).optional().nullable(),
         shiftId: z.string().cuid().optional().nullable(),
+        mealPlan: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER'])).max(3).optional(),
         notes: z.string().max(500).optional().nullable()
     })
     .refine((values) => Object.values(values).some((value) => value !== undefined), {
@@ -179,6 +181,10 @@ export async function PATCH(request: NextRequest, { params }: { params: { stayId
             updateData.notes = normalizeOptionalText(payload.notes);
         }
 
+        if (payload.mealPlan !== undefined) {
+            updateData.mealPlan = normalizeMealPlan(payload.mealPlan);
+        }
+
         if (payload.scheduledCheckIn !== undefined) {
             try {
                 const parsed = parseDateOrNull(payload.scheduledCheckIn);
@@ -295,6 +301,13 @@ export async function PATCH(request: NextRequest, { params }: { params: { stayId
         const nextScheduledCheckIn = updateData.scheduledCheckIn instanceof Date ? updateData.scheduledCheckIn : stay.scheduledCheckIn;
         const nextScheduledCheckOut = updateData.scheduledCheckOut instanceof Date ? updateData.scheduledCheckOut : stay.scheduledCheckOut;
         const nextStatus = payload.status ?? stay.status;
+        const nextPaymentTotal = hasPaymentBreakdownPayload
+            ? nextBreakdownTotal
+            : payload.amountPaid ?? stayRecord.amountPaid ?? 0;
+
+        if (payload.status === StayStatus.CHECKED_IN && stay.status !== StayStatus.CHECKED_IN && nextPaymentTotal <= 0) {
+            return new NextResponse('Укажите сумму оплаты перед заселением', { status: 400 });
+        }
 
         if (nextScheduledCheckOut <= nextScheduledCheckIn) {
             return new NextResponse('Дата выезда должна быть позже даты заезда', { status: 400 });

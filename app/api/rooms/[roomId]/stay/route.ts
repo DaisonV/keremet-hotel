@@ -5,20 +5,23 @@ import { getSessionUser } from '@/lib/server/session';
 import { assertHotelAccess } from '@/lib/permissions';
 import { notifyAdminAboutCheckIn, notifyAdminAboutStayExtension, notifyAdminAboutStayTransfer, notifyCleaningCrew, notifyCleaningCrewAboutCheckIn } from '@/lib/server/telegram-notify';
 import { buildCleaningRoomSnapshotLines } from '@/lib/server/cleaning-rooms';
-import { LedgerEntryType, PaymentMethod, RoomStatus, ShiftStatus, StayStatus } from '@prisma/client';
+import { LedgerEntryType, PaymentMethod, RoomStatus, ShiftStatus, StayStatus, UserRole } from '@prisma/client';
 import { handleApiError } from '@/lib/server/errors';
 import { detectStayPaymentMethod, normalizeBookingSource, resolveBookingSource, sumStayPayments } from '@/lib/stays';
+import { formatDateKey } from '@/lib/timezone';
+import { normalizeMealPlan } from '@/lib/meal-plan';
 
 export const dynamic = 'force-dynamic';
 
 const staySchema = z.object({
     shiftId: z.string().cuid().optional(),
     stayId: z.string().cuid().optional(),
-    intent: z.enum(['book', 'checkin', 'checkout', 'extend', 'transfer', 'cancel-booking']),
+    intent: z.enum(['book', 'checkin', 'checkout', 'extend', 'transfer', 'cancel-booking', 'adjust-payments']),
     guestName: z.string().optional(),
     guestPhone: z.string().max(40).optional().nullable(),
     companyName: z.string().max(120).optional().nullable(),
     bookingSource: z.string().max(80).optional().nullable(),
+    mealPlan: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER'])).max(3).optional(),
     notes: z.string().max(500).optional().nullable(),
     targetRoomId: z.string().cuid().optional(),
     transferNote: z.string().trim().max(300).optional().nullable(),
@@ -60,6 +63,19 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
         }
 
         assertHotelAccess(session, room.hotelId);
+
+        const canEditStayPayments = session.role !== UserRole.MANAGER
+            ? true
+            : Boolean((await prisma.hotelAssignment.findFirst({
+                where: {
+                    hotelId: room.hotelId,
+                    userId: session.id,
+                    isActive: true
+                },
+                select: {
+                    canEditStayPayments: true
+                }
+            }))?.canEditStayPayments);
 
         const shift = payload.shiftId
             ? await prisma.shift.findUnique({ where: { id: payload.shiftId } })
@@ -108,29 +124,81 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                 return new NextResponse('На эти даты у номера уже есть бронь или проживание', { status: 409 });
             }
 
-            const stay = await prisma.roomStay.create({
-                data: {
-                    roomId: room.id,
-                    hotelId: room.hotelId,
-                    bookingSource: resolvedBookingSource,
-                    scheduledCheckIn,
-                    scheduledCheckOut,
-                    status: StayStatus.SCHEDULED,
-                    guestName: normalizeOptionalText(payload.guestName),
-                    guestPhone: normalizeOptionalText(payload.guestPhone),
-                    companyName: normalizeOptionalText(payload.companyName),
-                    notes: normalizeOptionalText(payload.notes),
-                    amountPaid: 0,
-                    cashPaid: 0,
-                    cardPaid: 0,
-                    onlinePaid: 0
+            const cashAmount = payload.cashAmount ?? 0;
+            const cardAmount = payload.cardAmount ?? 0;
+            const onlineAmount = payload.onlineAmount ?? 0;
+
+            if (cashAmount < 0 || cardAmount < 0 || onlineAmount < 0) {
+                return new NextResponse('Сумма не может быть отрицательной', { status: 400 });
+            }
+
+            if ((cashAmount > 0 || cardAmount > 0) && (!shift || shift.status !== ShiftStatus.OPEN || shift.hotelId !== room.hotelId)) {
+                return new NextResponse('Для наличной или безналичной предоплаты нужна активная смена', { status: 400 });
+            }
+
+            const totalAmount = sumStayPayments({ cashPaid: cashAmount, cardPaid: cardAmount, onlinePaid: onlineAmount });
+            const detectedMethod = detectStayPaymentMethod({ cashPaid: cashAmount, cardPaid: cardAmount, onlinePaid: onlineAmount });
+
+            const stay = await prisma.$transaction(async (tx) => {
+                const createdStay = await tx.roomStay.create({
+                    data: {
+                        roomId: room.id,
+                        hotelId: room.hotelId,
+                        shiftId: cashAmount > 0 || cardAmount > 0 ? shift?.id : null,
+                        bookingSource: resolvedBookingSource,
+                        scheduledCheckIn,
+                        scheduledCheckOut,
+                        status: StayStatus.SCHEDULED,
+                        guestName: normalizeOptionalText(payload.guestName),
+                        guestPhone: normalizeOptionalText(payload.guestPhone),
+                        companyName: normalizeOptionalText(payload.companyName),
+                        mealPlan: normalizeMealPlan(payload.mealPlan),
+                        notes: normalizeOptionalText(payload.notes),
+                        amountPaid: totalAmount,
+                        paymentMethod: detectedMethod,
+                        cashPaid: cashAmount,
+                        cardPaid: cardAmount,
+                        onlinePaid: onlineAmount
+                    }
+                });
+
+                const ledgerPayloads = [
+                    { amount: cashAmount, method: PaymentMethod.CASH },
+                    { amount: cardAmount, method: PaymentMethod.CARD }
+                ].filter((entry) => entry.amount > 0);
+
+                for (const ledgerEntry of ledgerPayloads) {
+                    await tx.cashEntry.create({
+                        data: {
+                            hotelId: room.hotelId,
+                            shiftId: shift!.id,
+                            managerId: shift?.managerId ?? session.id,
+                            stayId: createdStay.id,
+                            entryType: LedgerEntryType.CASH_IN,
+                            method: ledgerEntry.method,
+                            amount: ledgerEntry.amount,
+                            note: `Предоплата №${room.label}`,
+                            meta: {
+                                source: 'room_stay',
+                                kind: 'booking_prepayment',
+                                stayId: createdStay.id,
+                                roomId: room.id
+                            }
+                        }
+                    });
                 }
+
+                return createdStay;
             });
 
             return NextResponse.json(stay);
         }
 
         if (payload.intent === 'cancel-booking') {
+            if (!canEditStayPayments) {
+                return new NextResponse('Нет права отменять операции', { status: 403 });
+            }
+
             if (!payload.stayId) {
                 return new NextResponse('Не указана бронь', { status: 400 });
             }
@@ -158,6 +226,134 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
             return NextResponse.json(cancelledStay);
         }
 
+        if (payload.intent === 'adjust-payments') {
+            if (!canEditStayPayments) {
+                return new NextResponse('Нет права редактировать суммы', { status: 403 });
+            }
+
+            if (!payload.stayId) {
+                return new NextResponse('Не указано проживание', { status: 400 });
+            }
+
+            const cashAmount = payload.cashAmount ?? 0;
+            const cardAmount = payload.cardAmount ?? 0;
+            const onlineAmount = payload.onlineAmount ?? 0;
+
+            if (cashAmount < 0 || cardAmount < 0 || onlineAmount < 0) {
+                return new NextResponse('Сумма не может быть отрицательной', { status: 400 });
+            }
+
+            const totalAmount = sumStayPayments({ cashPaid: cashAmount, cardPaid: cardAmount, onlinePaid: onlineAmount });
+            if (totalAmount <= 0) {
+                return new NextResponse('Укажите сумму оплаты', { status: 400 });
+            }
+
+            const targetStay = await prisma.roomStay.findFirst({
+                where: {
+                    id: payload.stayId,
+                    roomId: room.id,
+                    hotelId: room.hotelId,
+                    status: { not: StayStatus.CANCELLED }
+                },
+                include: {
+                    shift: {
+                        select: {
+                            id: true,
+                            managerId: true
+                        }
+                    }
+                }
+            });
+
+            if (!targetStay) {
+                return new NextResponse('Проживание не найдено', { status: 404 });
+            }
+
+            const adjustedStay = await prisma.$transaction(async (tx) => {
+                const linkedLedgerEntries = await tx.cashEntry.findMany({
+                    where: {
+                        stayId: targetStay.id,
+                        entryType: LedgerEntryType.CASH_IN
+                    },
+                    orderBy: { recordedAt: 'asc' },
+                    select: {
+                        id: true,
+                        shiftId: true,
+                        managerId: true,
+                        recordedAt: true
+                    }
+                });
+
+                const ledgerShiftId = linkedLedgerEntries[0]?.shiftId ?? targetStay.shiftId ?? shift?.id ?? null;
+                const ledgerManagerId = linkedLedgerEntries[0]?.managerId ?? targetStay.shift?.managerId ?? shift?.managerId ?? session.id;
+
+                if ((cashAmount > 0 || cardAmount > 0) && !ledgerShiftId) {
+                    return null;
+                }
+
+                if (linkedLedgerEntries.length) {
+                    await tx.cashEntry.deleteMany({
+                        where: {
+                            id: { in: linkedLedgerEntries.map((entry) => entry.id) }
+                        }
+                    });
+                }
+
+                const updatedStay = await tx.roomStay.update({
+                    where: { id: targetStay.id },
+                    data: {
+                        amountPaid: totalAmount,
+                        paymentMethod: detectStayPaymentMethod({
+                            cashPaid: cashAmount,
+                            cardPaid: cardAmount,
+                            onlinePaid: onlineAmount
+                        }),
+                        cashPaid: cashAmount,
+                        cardPaid: cardAmount,
+                        onlinePaid: onlineAmount,
+                        shiftId: targetStay.shiftId ?? ledgerShiftId
+                    }
+                });
+
+                const recordedAt = linkedLedgerEntries[0]?.recordedAt ?? new Date();
+                const ledgerPayloads = [
+                    { amount: cashAmount, method: PaymentMethod.CASH },
+                    { amount: cardAmount, method: PaymentMethod.CARD }
+                ].filter((entry) => entry.amount > 0);
+
+                for (const ledgerEntry of ledgerPayloads) {
+                    await tx.cashEntry.create({
+                        data: {
+                            hotelId: room.hotelId,
+                            shiftId: ledgerShiftId as string,
+                            managerId: ledgerManagerId,
+                            stayId: targetStay.id,
+                            entryType: LedgerEntryType.CASH_IN,
+                            method: ledgerEntry.method,
+                            amount: ledgerEntry.amount,
+                            note: `Корректировка оплаты №${room.label}`,
+                            recordedAt,
+                            meta: {
+                                source: 'room_stay',
+                                kind: 'manager_payment_adjustment',
+                                stayId: targetStay.id,
+                                roomId: room.id,
+                                adjustedBy: session.id
+                            }
+                        }
+                    });
+                }
+
+                return updatedStay;
+            });
+
+            if (!adjustedStay) {
+                return new NextResponse('Для наличной или безналичной корректировки нужна активная смена', { status: 400 });
+            }
+
+            return NextResponse.json(adjustedStay);
+        }
+
         if (payload.intent === 'checkin') {
             const normalizedBookingSource = normalizeBookingSource(payload.bookingSource);
             const resolvedBookingSource = normalizedBookingSource
@@ -176,16 +372,9 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                 (payload.paymentMethod === PaymentMethod.CARD ? payload.amountPaid ?? 0 : 0);
             const onlineAmount = payload.onlineAmount ?? 0;
 
-            if (!cashAmount && !cardAmount && !onlineAmount) {
-                return new NextResponse('Укажите сумму оплаты (наличные, безналичные и/или на сайте)', { status: 400 });
-            }
-
             if (cashAmount < 0 || cardAmount < 0 || onlineAmount < 0) {
                 return new NextResponse('Сумма не может быть отрицательной', { status: 400 });
             }
-
-            const totalAmount = sumStayPayments({ cashPaid: cashAmount, cardPaid: cardAmount, onlinePaid: onlineAmount });
-            const detectedMethod = detectStayPaymentMethod({ cashPaid: cashAmount, cardPaid: cardAmount, onlinePaid: onlineAmount });
 
             const scheduledStay = payload.stayId
                 ? await prisma.roomStay.findFirst({
@@ -202,8 +391,34 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                 return new NextResponse('Бронь не найдена или уже изменена', { status: 404 });
             }
 
+            if (scheduledStay) {
+                const todayKey = formatDateKey(new Date(), room.hotel.timezone);
+                const checkInKey = formatDateKey(scheduledStay.scheduledCheckIn, room.hotel.timezone);
+                if (checkInKey && todayKey && checkInKey > todayKey) {
+                    return new NextResponse('Заселение по брони доступно только в день заезда', { status: 400 });
+                }
+            }
+
             if (scheduledStay && (room.status !== RoomStatus.AVAILABLE || room.currentStayId)) {
                 return new NextResponse('Номер сейчас не свободен для заселения', { status: 409 });
+            }
+
+            const nextCashAmount = (scheduledStay?.cashPaid ?? 0) + cashAmount;
+            const nextCardAmount = (scheduledStay?.cardPaid ?? 0) + cardAmount;
+            const nextOnlineAmount = (scheduledStay?.onlinePaid ?? 0) + onlineAmount;
+            const totalAmount = sumStayPayments({
+                cashPaid: nextCashAmount,
+                cardPaid: nextCardAmount,
+                onlinePaid: nextOnlineAmount
+            });
+            const detectedMethod = detectStayPaymentMethod({
+                cashPaid: nextCashAmount,
+                cardPaid: nextCardAmount,
+                onlinePaid: nextOnlineAmount
+            });
+
+            if (totalAmount <= 0) {
+                return new NextResponse('Укажите сумму оплаты (наличные, безналичные и/или на сайте)', { status: 400 });
             }
 
             const stay = scheduledStay
@@ -219,12 +434,13 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                         guestName: normalizeOptionalText(payload.guestName) ?? scheduledStay.guestName,
                         guestPhone: normalizeOptionalText(payload.guestPhone) ?? scheduledStay.guestPhone,
                         companyName: normalizeOptionalText(payload.companyName) ?? scheduledStay.companyName,
+                        mealPlan: payload.mealPlan !== undefined ? normalizeMealPlan(payload.mealPlan) : scheduledStay.mealPlan,
                         notes: normalizeOptionalText(payload.notes) ?? scheduledStay.notes,
                         amountPaid: totalAmount,
                         paymentMethod: detectedMethod,
-                        cashPaid: cashAmount,
-                        cardPaid: cardAmount,
-                        onlinePaid: onlineAmount
+                        cashPaid: nextCashAmount,
+                        cardPaid: nextCardAmount,
+                        onlinePaid: nextOnlineAmount
                     }
                 })
                 : await prisma.roomStay.create({
@@ -242,6 +458,7 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                         guestName: normalizeOptionalText(payload.guestName),
                         guestPhone: normalizeOptionalText(payload.guestPhone),
                         companyName: normalizeOptionalText(payload.companyName),
+                        mealPlan: normalizeMealPlan(payload.mealPlan),
                         notes: normalizeOptionalText(payload.notes),
                         amountPaid: totalAmount,
                         paymentMethod: detectedMethod,
@@ -296,9 +513,9 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                     amount: totalAmount,
                     paymentMethod: detectedMethod,
                     paymentDetails: {
-                        cashAmount,
-                        cardAmount,
-                        onlineAmount
+                        cashAmount: nextCashAmount,
+                        cardAmount: nextCardAmount,
+                        onlineAmount: nextOnlineAmount
                     },
                     timezone: room.hotel.timezone,
                     currency: room.hotel.currency,
@@ -364,7 +581,6 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
             if (cashAmount < 0 || cardAmount < 0 || onlineAmount < 0) {
                 return new NextResponse('Сумма не может быть отрицательной', { status: 400 });
             }
-
             const totalCashPaid = (currentStay.cashPaid ?? 0) + cashAmount;
             const totalCardPaid = (currentStay.cardPaid ?? 0) + cardAmount;
             const totalOnlinePaid = (currentStay.onlinePaid ?? 0) + onlineAmount;

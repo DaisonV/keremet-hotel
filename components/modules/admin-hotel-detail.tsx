@@ -131,6 +131,7 @@ interface HotelDetailPayload {
         pinCode?: string | null;
         shiftPayAmount?: number | null;
         revenueSharePct?: number | null;
+        canEditStayPayments?: boolean | null;
     }>;
     rooms: Array<{
         id: string;
@@ -176,6 +177,7 @@ interface AddManagerForm {
     pinCode: string;
     shiftPayAmount?: number;
     revenueSharePct?: number;
+    canEditStayPayments: boolean;
 }
 
 interface UpdateManagerForm {
@@ -186,6 +188,7 @@ interface UpdateManagerForm {
     pinCode: string;
     shiftPayAmount?: number;
     revenueSharePct?: number;
+    canEditStayPayments: boolean;
 }
 
 interface EditShiftForm {
@@ -250,6 +253,8 @@ interface BookingCreateForm {
     scheduledCheckIn: string;
     scheduledCheckOut: string;
     bookingSource: string;
+    prepaymentAmount: number;
+    prepaymentMethod: 'CASH' | 'CARD' | 'ONLINE';
     notes: string;
 }
 
@@ -294,6 +299,8 @@ const createBookingDefaults = (): BookingCreateForm => ({
     scheduledCheckIn: '',
     scheduledCheckOut: '',
     bookingSource: '',
+    prepaymentAmount: 0,
+    prepaymentMethod: 'CASH',
     notes: ''
 });
 
@@ -516,7 +523,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
     const formatStayDate = (value?: string | null) => formatDateTime(value, hotelTz, undefined, '—');
 
     const managerForm = useForm<AddManagerForm>({
-        defaultValues: { displayName: '', loginName: '', username: '', pinCode: '', shiftPayAmount: undefined, revenueSharePct: undefined }
+        defaultValues: { displayName: '', loginName: '', username: '', pinCode: '', shiftPayAmount: undefined, revenueSharePct: undefined, canEditStayPayments: false }
     });
     const updateManagerForm = useForm<UpdateManagerForm>({
         defaultValues: {
@@ -526,7 +533,8 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
             username: '',
             pinCode: '',
             shiftPayAmount: undefined,
-            revenueSharePct: undefined
+            revenueSharePct: undefined,
+            canEditStayPayments: false
         }
     });
     const roomForm = useForm<CreateRoomsForm>({
@@ -652,6 +660,12 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
             updateManagerForm.setFocus('pinCode');
         }
     }, [isUpdateManagerExpanded, selectedManagerId, updateManagerForm]);
+
+    useEffect(() => {
+        if (selectedManager) {
+            updateManagerForm.setValue('canEditStayPayments', Boolean(selectedManager.canEditStayPayments));
+        }
+    }, [selectedManager, updateManagerForm]);
 
     const handleGenerateManagerLogin = () => {
         const suggestion = createLoginSuggestion(managerForm.getValues('displayName'));
@@ -856,6 +870,27 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
     );
 
     const pendingOnlineHistory = useMemo(() => data?.pendingOnlineStays ?? [], [data]);
+    const prepaidBookings = useMemo(() => {
+        if (!data) {
+            return [];
+        }
+
+        return data.rooms
+            .flatMap((room) =>
+                room.stays
+                    .filter((stay) => stay.status === 'SCHEDULED' && (stay.amountPaid ?? 0) > 0)
+                    .map((stay) => ({ room, stay }))
+            )
+            .sort((first, second) => {
+                const firstTime = new Date(first.stay.scheduledCheckIn).getTime();
+                const secondTime = new Date(second.stay.scheduledCheckIn).getTime();
+                return firstTime - secondTime;
+            });
+    }, [data]);
+    const prepaidBookingsTotal = useMemo(
+        () => prepaidBookings.reduce((total, item) => total + (item.stay.amountPaid ?? 0), 0),
+        [prepaidBookings]
+    );
 
     const [isTransactionsExpanded, setIsTransactionsExpanded] = useState(false);
     const [isRoomHistoryExpanded, setIsRoomHistoryExpanded] = useState(false);
@@ -1457,9 +1492,20 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
     const handleCreateBooking = bookingCreateForm.handleSubmit(async (values) => {
         const scheduledCheckIn = fromDateTimeInputValue(values.scheduledCheckIn);
         const scheduledCheckOut = fromDateTimeInputValue(values.scheduledCheckOut);
+        const prepaymentAmount = Number.isFinite(values.prepaymentAmount) ? values.prepaymentAmount || 0 : 0;
 
         if (!values.roomId || !scheduledCheckIn || !scheduledCheckOut) {
             toast('Выберите номер и даты брони', 'error');
+            return;
+        }
+
+        if (prepaymentAmount < 0) {
+            toast('Сумма предоплаты не может быть отрицательной', 'error');
+            return;
+        }
+
+        if (prepaymentAmount > 0 && values.prepaymentMethod !== 'ONLINE' && !activeShiftId) {
+            toast('Для наличной или безналичной предоплаты нужна активная смена', 'error');
             return;
         }
 
@@ -1474,6 +1520,9 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                     scheduledCheckIn,
                     scheduledCheckOut,
                     bookingSource: data?.usesExtranets ? normalizeOptionalText(values.bookingSource) : undefined,
+                    shiftId: prepaymentAmount > 0 && values.prepaymentMethod !== 'ONLINE' ? activeShiftId : undefined,
+                    prepaymentAmount: toMinor(prepaymentAmount),
+                    prepaymentMethod: prepaymentAmount > 0 ? values.prepaymentMethod : undefined,
                     notes: normalizeOptionalText(values.notes)
                 }
             });
@@ -1652,10 +1701,11 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                 username: values.username?.trim() || undefined,
                 pinCode: values.pinCode,
                 shiftPayAmount: shiftPayAmount ?? undefined,
-                revenueSharePct: revenueSharePct ?? undefined
+                revenueSharePct: revenueSharePct ?? undefined,
+                canEditStayPayments: values.canEditStayPayments
             }
         });
-        managerForm.reset({ displayName: '', loginName: '', username: '', pinCode: '', shiftPayAmount: undefined, revenueSharePct: undefined });
+        managerForm.reset({ displayName: '', loginName: '', username: '', pinCode: '', shiftPayAmount: undefined, revenueSharePct: undefined, canEditStayPayments: false });
         mutate();
     });
 
@@ -1670,7 +1720,8 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
             username: values.username.trim() || undefined,
             pinCode: values.pinCode.trim() || undefined,
             shiftPayAmount: shiftPayAmount ?? undefined,
-            revenueSharePct: revenueSharePct ?? undefined
+            revenueSharePct: revenueSharePct ?? undefined,
+            canEditStayPayments: values.canEditStayPayments
         };
 
         const hasUpdates =
@@ -1679,7 +1730,8 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
             Boolean(payload.username) ||
             Boolean(payload.pinCode) ||
             shiftPayAmount !== null ||
-            revenueSharePct !== null;
+            revenueSharePct !== null ||
+            values.canEditStayPayments !== Boolean(selectedManager?.canEditStayPayments);
 
         if (!hasUpdates) {
             updateManagerForm.setError('assignmentId', {
@@ -1702,7 +1754,8 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                 username: '',
                 pinCode: '',
                 shiftPayAmount: undefined,
-                revenueSharePct: undefined
+                revenueSharePct: undefined,
+                canEditStayPayments: values.canEditStayPayments
             });
             mutate();
             toast('Менеджер обновлён', 'success');
@@ -1723,7 +1776,8 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
             username: '',
             pinCode: '',
             shiftPayAmount: target?.shiftPayAmount != null ? toMajorValue(target.shiftPayAmount) : undefined,
-            revenueSharePct: target?.revenueSharePct ?? undefined
+            revenueSharePct: target?.revenueSharePct ?? undefined,
+            canEditStayPayments: Boolean(target?.canEditStayPayments)
         });
     };
 
@@ -1983,6 +2037,52 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                         Ожидающих поступлений нет.
                                     </p>
                                 )}
+                            </div>
+                        ) : null}
+                        {prepaidBookings.length > 0 ? (
+                            <div className="rounded-2xl border border-cyan-200 bg-cyan-50 p-3.5 text-cyan-900 sm:rounded-[24px] sm:p-4 dark:border-cyan-300/20 dark:bg-cyan-400/10 dark:text-cyan-50">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div>
+                                        <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-700/60 dark:text-cyan-100/55">Предоплаты по броням</p>
+                                        <p className="mt-1 text-lg font-semibold">{formatCurrency(prepaidBookingsTotal)}</p>
+                                    </div>
+                                    <Badge label={`${prepaidBookings.length} броней`} tone="default" />
+                                </div>
+                                <div className="mt-4 grid gap-2 lg:grid-cols-2">
+                                    {prepaidBookings.slice(0, 6).map(({ room, stay }) => {
+                                        const paymentParts = [
+                                            (stay.cashPaid ?? 0) > 0 ? `нал ${formatCurrency(stay.cashPaid)}` : null,
+                                            (stay.cardPaid ?? 0) > 0 ? `безнал ${formatCurrency(stay.cardPaid)}` : null,
+                                            (stay.onlinePaid ?? 0) > 0 ? `онлайн ${formatCurrency(stay.onlinePaid)}` : null
+                                        ].filter(Boolean).join(' · ');
+                                        const guestLabel = stay.guestName?.trim() || 'Гость';
+
+                                        return (
+                                            <button
+                                                key={`prepaid-booking-${stay.id}`}
+                                                type="button"
+                                                className="min-w-0 rounded-2xl border border-cyan-200/80 bg-white px-3 py-3 text-left transition hover:border-cyan-300 hover:bg-cyan-100/70 dark:border-cyan-200/20 dark:bg-black/15 dark:hover:border-cyan-200/35 dark:hover:bg-cyan-300/10"
+                                                onClick={() => handleSelectStayForEdit(room, stay)}
+                                            >
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="rounded-lg bg-cyan-100 px-2 py-1 text-xs font-semibold text-cyan-800 dark:bg-white/10 dark:text-cyan-50">№ {room.label}</span>
+                                                    <span className="min-w-0 truncate text-sm font-semibold text-slate-950 dark:text-white">{guestLabel}</span>
+                                                </div>
+                                                <p className="mt-2 text-xs text-cyan-800/75 dark:text-cyan-50/65">
+                                                    {formatStayDate(stay.scheduledCheckIn)} — {formatStayDate(stay.scheduledCheckOut)}
+                                                </p>
+                                                <p className="mt-1 text-sm font-semibold text-cyan-800 dark:text-cyan-100">
+                                                    {formatCurrency(stay.amountPaid ?? 0)}{paymentParts ? ` · ${paymentParts}` : ''}
+                                                </p>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                {prepaidBookings.length > 6 ? (
+                                    <p className="mt-3 text-xs text-cyan-800/70 dark:text-cyan-50/55">
+                                        Показаны ближайшие 6. Полный список доступен в истории броней.
+                                    </p>
+                                ) : null}
                             </div>
                         ) : null}
                     </div>
@@ -2920,6 +3020,27 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                         <Input type="datetime-local" step="60" {...bookingCreateForm.register('scheduledCheckOut')} />
                                     </div>
                                 </div>
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="space-y-1">
+                                        <label className={modalLabelClass}>{`Предоплата (${hotelCur || 'KZT'})`}</label>
+                                        <Input
+                                            type="number"
+                                            min="0"
+                                            step="0.01"
+                                            inputMode="decimal"
+                                            placeholder="0"
+                                            {...bookingCreateForm.register('prepaymentAmount', { valueAsNumber: true })}
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className={modalLabelClass}>Способ предоплаты</label>
+                                        <Select {...bookingCreateForm.register('prepaymentMethod')}>
+                                            <option value="CASH">Наличные</option>
+                                            <option value="CARD">Безнал</option>
+                                            <option value="ONLINE">На сайте / онлайн</option>
+                                        </Select>
+                                    </div>
+                                </div>
                                 <div className="space-y-1">
                                     <label className={modalLabelClass}>Комментарий</label>
                                     <TextArea rows={3} placeholder="Пожелания гостя, условия оплаты, кто оставил бронь" {...bookingCreateForm.register('notes')} />
@@ -3298,9 +3419,13 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                                 Ставка: {manager.shiftPayAmount != null ? formatCurrency(manager.shiftPayAmount) : '—'} •
                                                                 Процент: {manager.revenueSharePct != null ? formatPercentage(manager.revenueSharePct) : '—'}
                                                             </p>
+                                                            <p className="text-xs text-slate-500 dark:text-white/50">
+                                                                Исправления: {manager.canEditStayPayments ? 'разрешены' : 'без доступа'}
+                                                            </p>
                                                         </div>
                                                         <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
                                                             <Badge label="Менеджер" />
+                                                            {manager.canEditStayPayments ? <Badge label="Суммы" tone="success" /> : null}
                                                             <Button
                                                                 type="button"
                                                                 size="sm"
@@ -3398,6 +3523,14 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                             placeholder="Процент с оборота"
                                                             {...managerForm.register('revenueSharePct', { valueAsNumber: true, min: 0 })}
                                                         />
+                                                        <label className="flex items-start gap-2 rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-white/70">
+                                                            <input
+                                                                type="checkbox"
+                                                                className="mt-0.5 h-4 w-4 rounded border-slate-300"
+                                                                {...managerForm.register('canEditStayPayments')}
+                                                            />
+                                                            <span>Разрешить исправлять суммы и отменять операции</span>
+                                                        </label>
                                                         <Input placeholder="Подпись / @username (необязательно)" {...managerForm.register('username')} />
                                                         <Button type="submit" className="w-full">
                                                             Добавить менеджера
@@ -3511,6 +3644,14 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                             }
                                                             {...updateManagerForm.register('revenueSharePct', { valueAsNumber: true, min: 0 })}
                                                         />
+                                                        <label className="flex items-start gap-2 rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-white/70">
+                                                            <input
+                                                                type="checkbox"
+                                                                className="mt-0.5 h-4 w-4 rounded border-slate-300"
+                                                                {...updateManagerForm.register('canEditStayPayments')}
+                                                            />
+                                                            <span>Разрешить исправлять суммы и отменять операции</span>
+                                                        </label>
                                                         <Button type="submit" className="w-full" variant="secondary">
                                                             Обновить менеджера
                                                         </Button>

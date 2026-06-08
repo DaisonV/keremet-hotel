@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { StayStatus } from '@prisma/client';
+import { LedgerEntryType, PaymentMethod, ShiftStatus, StayStatus } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { getSessionUser } from '@/lib/server/session';
 import { assertAdmin } from '@/lib/permissions';
 import { handleApiError } from '@/lib/server/errors';
 import { getCountryFromRequest } from '@/lib/server/request-country';
-import { normalizeBookingSource, resolveBookingSource } from '@/lib/stays';
+import { detectStayPaymentMethod, normalizeBookingSource, resolveBookingSource, sumStayPayments } from '@/lib/stays';
+import { normalizeMealPlan } from '@/lib/meal-plan';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +19,10 @@ const createStaySchema = z.object({
     bookingSource: z.string().max(80).optional().nullable(),
     scheduledCheckIn: z.string().datetime(),
     scheduledCheckOut: z.string().datetime(),
+    shiftId: z.string().cuid().optional().nullable(),
+    prepaymentAmount: z.number().int().min(0).optional(),
+    prepaymentMethod: z.enum(['CASH', 'CARD', 'ONLINE']).optional().nullable(),
+    mealPlan: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER'])).max(3).optional(),
     notes: z.string().max(500).optional().nullable()
 });
 
@@ -84,23 +89,91 @@ export async function POST(request: NextRequest) {
             return new NextResponse('На эти даты у номера уже есть бронь или проживание', { status: 409 });
         }
 
-        const stay = await prisma.roomStay.create({
-            data: {
-                roomId: room.id,
-                hotelId: room.hotelId,
-                guestName: normalizeOptionalText(payload.guestName),
-                guestPhone: normalizeOptionalText(payload.guestPhone),
-                companyName: normalizeOptionalText(payload.companyName),
-                bookingSource: resolvedBookingSource,
-                scheduledCheckIn,
-                scheduledCheckOut,
-                status: StayStatus.SCHEDULED,
-                notes: normalizeOptionalText(payload.notes),
-                amountPaid: 0,
-                cashPaid: 0,
-                cardPaid: 0,
-                onlinePaid: 0
+        const prepaymentAmount = payload.prepaymentAmount ?? 0;
+        const prepaymentMethod = prepaymentAmount > 0 ? payload.prepaymentMethod : null;
+        if (prepaymentAmount > 0 && !prepaymentMethod) {
+            return new NextResponse('Укажите способ предоплаты', { status: 400 });
+        }
+
+        const prepaymentCash = prepaymentMethod === 'CASH' ? prepaymentAmount : 0;
+        const prepaymentCard = prepaymentMethod === 'CARD' ? prepaymentAmount : 0;
+        const prepaymentOnline = prepaymentMethod === 'ONLINE' ? prepaymentAmount : 0;
+        const prepaymentTotal = sumStayPayments({
+            cashPaid: prepaymentCash,
+            cardPaid: prepaymentCard,
+            onlinePaid: prepaymentOnline
+        });
+        const ledgerPrepaymentMethod = prepaymentMethod === 'CASH'
+            ? PaymentMethod.CASH
+            : prepaymentMethod === 'CARD'
+                ? PaymentMethod.CARD
+                : null;
+
+        const requestedShift = payload.shiftId
+            ? await prisma.shift.findFirst({
+                where: {
+                    id: payload.shiftId,
+                    hotelId: room.hotelId,
+                    status: ShiftStatus.OPEN,
+                    hotel: { country }
+                },
+                select: { id: true, managerId: true }
+            })
+            : null;
+
+        if (ledgerPrepaymentMethod && !requestedShift) {
+            return new NextResponse('Для наличной или безналичной предоплаты нужна активная смена', { status: 400 });
+        }
+
+        const stay = await prisma.$transaction(async (tx) => {
+            const createdStay = await tx.roomStay.create({
+                data: {
+                    roomId: room.id,
+                    hotelId: room.hotelId,
+                    shiftId: requestedShift?.id ?? null,
+                    guestName: normalizeOptionalText(payload.guestName),
+                    guestPhone: normalizeOptionalText(payload.guestPhone),
+                    companyName: normalizeOptionalText(payload.companyName),
+                    bookingSource: resolvedBookingSource,
+                    scheduledCheckIn,
+                    scheduledCheckOut,
+                    status: StayStatus.SCHEDULED,
+                    mealPlan: normalizeMealPlan(payload.mealPlan),
+                    notes: normalizeOptionalText(payload.notes),
+                    amountPaid: prepaymentTotal,
+                    paymentMethod: detectStayPaymentMethod({
+                        cashPaid: prepaymentCash,
+                        cardPaid: prepaymentCard,
+                        onlinePaid: prepaymentOnline
+                    }),
+                    cashPaid: prepaymentCash,
+                    cardPaid: prepaymentCard,
+                    onlinePaid: prepaymentOnline
+                }
+            });
+
+            if (ledgerPrepaymentMethod && requestedShift) {
+                await tx.cashEntry.create({
+                    data: {
+                        hotelId: room.hotelId,
+                        shiftId: requestedShift.id,
+                        managerId: requestedShift.managerId,
+                        stayId: createdStay.id,
+                        entryType: LedgerEntryType.CASH_IN,
+                        method: ledgerPrepaymentMethod,
+                        amount: prepaymentAmount,
+                        note: `Предоплата №${room.label}`,
+                        meta: {
+                            source: 'room_stay',
+                            kind: 'booking_prepayment',
+                            stayId: createdStay.id,
+                            roomId: room.id
+                        }
+                    }
+                });
             }
+
+            return createdStay;
         });
 
         return NextResponse.json(stay, { status: 201 });

@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
-import { LedgerEntryType, PaymentMethod, RoomStatus, ShiftStatus, StayStatus } from '@prisma/client';
+import { LedgerEntryType, PaymentMethod, RoomStatus, ShiftStatus, StayStatus, UserRole } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { assertHotelAccess } from '@/lib/permissions';
 import { handleApiError } from '@/lib/server/errors';
 import { getSessionUser } from '@/lib/server/session';
 import { detectStayPaymentMethod, sumStayPayments } from '@/lib/stays';
+import { normalizeMealPlan } from '@/lib/meal-plan';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,6 +22,7 @@ const groupCheckInSchema = z.object({
     scheduledCheckOut: z.string().datetime(),
     totalAmount: z.number().int().positive(),
     paymentMode: z.enum(['CASH', 'CARD', 'PENDING_TRANSFER']),
+    mealPlan: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER'])).max(3).optional(),
     notes: z.string().max(500).optional().nullable(),
 });
 
@@ -63,7 +65,24 @@ export async function POST(request: NextRequest) {
             return new NextResponse('Нужна активная смена для групповой операции', { status: 400 });
         }
 
+        const canEditStayPayments = session.role !== UserRole.MANAGER
+            ? true
+            : Boolean((await prisma.hotelAssignment.findFirst({
+                where: {
+                    hotelId: payload.hotelId,
+                    userId: session.id,
+                    isActive: true
+                },
+                select: {
+                    canEditStayPayments: true
+                }
+            }))?.canEditStayPayments);
+
         if (payload.action === 'confirm-transfer') {
+            if (!canEditStayPayments) {
+                return new NextResponse('Нет права редактировать суммы', { status: 403 });
+            }
+
             const stays = await prisma.roomStay.findMany({
                 where: {
                     id: { in: payload.stayIds },
@@ -210,6 +229,7 @@ export async function POST(request: NextRequest) {
                         actualCheckIn: new Date(),
                         status: StayStatus.CHECKED_IN,
                         guestName,
+                        mealPlan: normalizeMealPlan(payload.mealPlan),
                         notes: baseNote,
                         amountPaid: portion,
                         paymentMethod: detectStayPaymentMethod({ cashPaid, cardPaid, onlinePaid }),

@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
         const [assignment, bonusTiers] = await Promise.all([
             prisma.hotelAssignment.findFirst({
                 where: { hotelId, userId: session.id, isActive: true },
-                select: { shiftPayAmount: true, revenueSharePct: true }
+                select: { shiftPayAmount: true, revenueSharePct: true, canEditStayPayments: true }
             }),
             prisma.bonusTier.findMany({
                 where: { hotelId },
@@ -287,6 +287,7 @@ export async function GET(request: NextRequest) {
                     cardPaid: stay.cardPaid,
                     onlinePaid: stay.onlinePaid,
                     bookingSource: stay.bookingSource,
+                    mealPlan: stay.mealPlan,
                     notes: stay.notes
                 });
 
@@ -307,6 +308,7 @@ export async function GET(request: NextRequest) {
                 ? {
                     shiftPayAmount: assignment.shiftPayAmount,
                     revenueSharePct: assignment.revenueSharePct,
+                    canEditStayPayments: assignment.canEditStayPayments,
                     expectedPayout: payoutSummary?.expected ?? null,
                     paidPayout: payoutSummary?.paid ?? null,
                     pendingPayout: payoutSummary?.pending ?? null,

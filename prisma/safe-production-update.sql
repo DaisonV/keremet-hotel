@@ -46,6 +46,20 @@ BEGIN
     END IF;
 END $$;
 
+-- 3b. HotelAssignment: добавить право редактировать суммы проживаний (если нет)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'HotelAssignment' AND column_name = 'can_edit_stay_payments'
+    ) THEN
+        ALTER TABLE "HotelAssignment" ADD COLUMN "can_edit_stay_payments" BOOLEAN NOT NULL DEFAULT false;
+        RAISE NOTICE 'Added HotelAssignment.can_edit_stay_payments';
+    ELSE
+        RAISE NOTICE 'HotelAssignment.can_edit_stay_payments already exists — skipped';
+    END IF;
+END $$;
+
 -- 4. Shift: добавить handoverRecipientId (если нет)
 DO $$
 BEGIN
@@ -162,6 +176,16 @@ BEGIN
         RAISE NOTICE 'Added RoomStay.company_name';
     ELSE
         RAISE NOTICE 'RoomStay.company_name already exists — skipped';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'RoomStay' AND column_name = 'meal_plan'
+    ) THEN
+        ALTER TABLE "RoomStay" ADD COLUMN "meal_plan" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+        RAISE NOTICE 'Added RoomStay.meal_plan';
+    ELSE
+        RAISE NOTICE 'RoomStay.meal_plan already exists — skipped';
     END IF;
 END $$;
 

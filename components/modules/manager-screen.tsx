@@ -12,9 +12,10 @@ import { Select } from '@/components/ui/select';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import type { SessionUser } from '@/lib/types';
 import { useCookieApi } from '@/hooks/useCookieApi';
-import { formatDateTime, formatInputValue, parseInputValue, formatMoney } from '@/lib/timezone';
+import { formatDateKey, formatDateTime, formatInputValue, parseInputValue, formatMoney } from '@/lib/timezone';
 import { isCollectionLedgerEntry } from '@/lib/ledger';
-import { ArrowRightLeft, CalendarPlus, CheckCircle2, LogIn, LogOut, Users } from 'lucide-react';
+import { MEAL_PLAN_OPTIONS, mealPlanLabels } from '@/lib/meal-plan';
+import { ArrowRightLeft, Banknote, CalendarPlus, CheckCircle2, LogIn, LogOut, Users } from 'lucide-react';
 
 type ManagerRoomStay = {
     id: string;
@@ -30,6 +31,7 @@ type ManagerRoomStay = {
     cardPaid?: number | null;
     onlinePaid?: number | null;
     bookingSource?: string | null;
+    mealPlan?: string[] | null;
     notes?: string | null;
 };
 
@@ -95,6 +97,7 @@ interface ManagerStateResponse {
     compensation?: {
         shiftPayAmount?: number | null;
         revenueSharePct?: number | null;
+        canEditStayPayments?: boolean | null;
         expectedPayout?: number | null;
         paidPayout?: number | null;
         pendingPayout?: number | null;
@@ -160,6 +163,7 @@ interface CheckInModalState {
     guestPhone: string;
     companyName: string;
     bookingSource: string;
+    mealPlan: string[];
     notes: string;
     targetRoomId: string;
     transferNote: string;
@@ -169,6 +173,7 @@ interface CheckInModalState {
     cashAmount: string;
     cardAmount: string;
     onlineAmount: string;
+    existingPaid: number;
 }
 
 interface GroupCheckInState {
@@ -178,8 +183,19 @@ interface GroupCheckInState {
     checkOut: string;
     totalAmount: string;
     paymentMode: 'CARD' | 'CASH' | 'PENDING_TRANSFER';
+    mealPlan: string[];
     notes: string;
     roomIds: string[];
+}
+
+interface PaymentAdjustState {
+    roomId: string;
+    roomLabel: string;
+    stayId: string;
+    guestName: string;
+    cashAmount: string;
+    cardAmount: string;
+    onlineAmount: string;
 }
 
 interface ConfirmTransfersState {
@@ -188,6 +204,7 @@ interface ConfirmTransfersState {
 
 type PanelKey = 'rooms' | 'shift' | 'cash' | 'history';
 type RoomViewMode = 'cards' | 'board';
+type BoardListPopupKind = 'scheduled' | 'checkedIn' | 'overdue' | 'freeDates';
 
 const managerBoardDayCount = 14;
 
@@ -315,9 +332,13 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         room: ManagerStateResponse['rooms'][number];
         selectedDay: Date;
     } | null>(null);
+    const [boardListPopup, setBoardListPopup] = useState<BoardListPopupKind | null>(null);
     const [groupCheckIn, setGroupCheckIn] = useState<GroupCheckInState | null>(null);
     const [isSubmittingGroupCheckIn, setIsSubmittingGroupCheckIn] = useState(false);
     const [groupCheckInError, setGroupCheckInError] = useState<string | null>(null);
+    const [paymentAdjust, setPaymentAdjust] = useState<PaymentAdjustState | null>(null);
+    const [isSubmittingPaymentAdjust, setIsSubmittingPaymentAdjust] = useState(false);
+    const [paymentAdjustError, setPaymentAdjustError] = useState<string | null>(null);
     const [confirmTransfers, setConfirmTransfers] = useState<ConfirmTransfersState | null>(null);
     const [isConfirmingTransfers, setIsConfirmingTransfers] = useState(false);
     const [confirmTransfersError, setConfirmTransfersError] = useState<string | null>(null);
@@ -371,6 +392,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
     const expenseCategories = data?.expenseCategories ?? [];
     const selectedExpenseEntryType = expenseForm.watch('entryType');
     const compensation = data?.compensation ?? null;
+    const canEditStayPayments = Boolean(compensation?.canEditStayPayments);
     const managerName = user.displayName?.trim() || user.username?.trim() || 'Менеджер';
     const shiftPayDisplay = typeof compensation?.shiftPayAmount === 'number' ? formatKgs(compensation.shiftPayAmount) : null;
     const shareDisplay = typeof compensation?.revenueSharePct === 'number' ? `${compensation.revenueSharePct}%` : null;
@@ -534,6 +556,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                     const isOverdue = stay.status === 'CHECKED_IN' && isPastDate(stay.scheduledCheckOut, now);
                     const guestLabel = stay.guestName?.trim() || (stay.status === 'CHECKED_IN' ? 'Гость' : 'Бронь');
                     const detailLabel = [
+                        ...mealPlanLabels(stay.mealPlan),
                         stay.bookingSource?.trim(),
                         stay.companyName?.trim(),
                         stay.guestPhone?.trim()
@@ -587,6 +610,72 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
     }, [roomBoardRows]);
 
     const boardGridTemplate = `82px repeat(${managerBoardDayCount}, minmax(118px, 1fr))`;
+
+    const boardStayListItems = useMemo(() => {
+        return roomBoardRows.flatMap((row) =>
+            row.items.map((item) => ({
+                room: row.room,
+                stay: item.stay,
+                isOverdue: item.isOverdue,
+                guestLabel: item.guestLabel,
+                detailLabel: item.detailLabel,
+            }))
+        );
+    }, [roomBoardRows]);
+
+    const boardScheduledItems = useMemo(
+        () => boardStayListItems.filter((item) => item.stay.status === 'SCHEDULED'),
+        [boardStayListItems]
+    );
+
+    const boardCheckedInItems = useMemo(
+        () => boardStayListItems.filter((item) => item.stay.status === 'CHECKED_IN' && !item.isOverdue),
+        [boardStayListItems]
+    );
+
+    const boardOverdueItems = useMemo(
+        () => boardStayListItems.filter((item) => item.stay.status === 'CHECKED_IN' && item.isOverdue),
+        [boardStayListItems]
+    );
+
+    const boardFreeDateItems = useMemo(() => {
+        return roomBoardRows.flatMap((row) => {
+            const occupiedRanges = row.items
+                .map((item) => ({
+                    startIndex: item.startIndex,
+                    endIndex: Math.min(managerBoardDayCount, item.startIndex + item.span),
+                }))
+                .sort((first, second) => first.startIndex - second.startIndex);
+
+            let cursor = 0;
+            const gaps: Array<{ room: typeof row.room; startIndex: number; endIndex: number; startDate: Date; endDate: Date }> = [];
+
+            for (const range of occupiedRanges) {
+                if (range.startIndex > cursor) {
+                    gaps.push({
+                        room: row.room,
+                        startIndex: cursor,
+                        endIndex: range.startIndex,
+                        startDate: addDays(roomBoardRange.start, cursor),
+                        endDate: addDays(roomBoardRange.start, range.startIndex),
+                    });
+                }
+                cursor = Math.max(cursor, range.endIndex);
+            }
+
+            if (cursor < managerBoardDayCount) {
+                gaps.push({
+                    room: row.room,
+                    startIndex: cursor,
+                    endIndex: managerBoardDayCount,
+                    startDate: addDays(roomBoardRange.start, cursor),
+                    endDate: addDays(roomBoardRange.start, managerBoardDayCount),
+                });
+            }
+
+            return gaps;
+        });
+    }, [roomBoardRange.start, roomBoardRows]);
 
     const toggleBoardSection = (key: string) => {
         setCollapsedBoardSections((current) => ({
@@ -668,8 +757,10 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                     : formatShareDate(room.stay.scheduledCheckOut, hotelTz);
 
                 const guestName = room.stay.guestName?.trim();
+                const mealLabel = mealPlanLabels(room.stay.mealPlan).join('/');
                 const prefix = isPastDate(room.stay.scheduledCheckOut, now) ? 'просрочено с' : 'до';
-                return guestName ? `${prefix} ${checkoutLabel} - ${guestName}` : `${prefix} ${checkoutLabel}`;
+                const guestPart = [guestName, mealLabel].filter(Boolean).join(' · ');
+                return guestPart ? `${prefix} ${checkoutLabel} - ${guestPart}` : `${prefix} ${checkoutLabel}`;
             })();
 
             const line = `${room.label} ${statusText}`;
@@ -874,6 +965,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             checkOut: formatDateInputValue(endDate),
             totalAmount: '',
             paymentMode: 'PENDING_TRANSFER',
+            mealPlan: [],
             notes: '',
             roomIds: [],
         });
@@ -887,6 +979,26 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                 ? prev.roomIds.filter((id) => id !== roomId)
                 : [...prev.roomIds, roomId];
             return { ...prev, roomIds };
+        });
+    };
+
+    const toggleGroupMealPlan = (meal: string) => {
+        setGroupCheckIn((prev) => {
+            if (!prev) return prev;
+            const mealPlan = prev.mealPlan.includes(meal)
+                ? prev.mealPlan.filter((item) => item !== meal)
+                : [...prev.mealPlan, meal];
+            return { ...prev, mealPlan };
+        });
+    };
+
+    const toggleCheckInMealPlan = (meal: string) => {
+        setCheckInModal((prev) => {
+            if (!prev) return prev;
+            const mealPlan = prev.mealPlan.includes(meal)
+                ? prev.mealPlan.filter((item) => item !== meal)
+                : [...prev.mealPlan, meal];
+            return { ...prev, mealPlan };
         });
     };
 
@@ -929,6 +1041,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                     scheduledCheckOut: scheduledCheckOut.toISOString(),
                     totalAmount: toMinor(totalValue),
                     paymentMode: groupCheckIn.paymentMode,
+                    mealPlan: groupCheckIn.mealPlan,
                     notes: groupCheckIn.notes.trim() || undefined,
                 },
             });
@@ -949,6 +1062,10 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             toast('Сначала откройте смену, чтобы подтвердить перевод', 'error');
             return;
         }
+        if (!canEditStayPayments) {
+            toast('Нет права редактировать суммы. Обратитесь к администратору', 'error');
+            return;
+        }
         const stayIds = pendingTransferRooms.map((room) => room.stay?.id).filter((id): id is string => Boolean(id));
         if (!stayIds.length) {
             toast('Нет ожидающих переводов', 'error');
@@ -960,6 +1077,10 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
     const handleConfirmTransfers = async () => {
         if (!confirmTransfers || !data?.shift || !data.hotel.id) return;
+        if (!canEditStayPayments) {
+            setConfirmTransfersError('Нет права редактировать суммы. Обратитесь к администратору');
+            return;
+        }
         setIsConfirmingTransfers(true);
         try {
             await request('/api/rooms/group-stay', {
@@ -1001,6 +1122,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: '',
             companyName: '',
             bookingSource: '',
+            mealPlan: [],
             notes: '',
             targetRoomId: '',
             transferNote: '',
@@ -1009,7 +1131,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             checkOut: formatDateInputValue(endDate),
             cashAmount: '',
             cardAmount: '',
-            onlineAmount: ''
+            onlineAmount: '',
+            existingPaid: 0
         });
         setCheckInError(null);
     };
@@ -1039,6 +1162,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: '',
             companyName: '',
             bookingSource: '',
+            mealPlan: [],
             notes: '',
             targetRoomId: '',
             transferNote: '',
@@ -1047,7 +1171,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             checkOut: formatDateInputValue(endDate),
             cashAmount: '',
             cardAmount: '',
-            onlineAmount: ''
+            onlineAmount: '',
+            existingPaid: 0
         });
         setCheckInError(null);
     };
@@ -1070,9 +1195,19 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         });
     };
 
+    const canCheckInScheduledStay = useCallback((stay: ManagerRoomStay) => {
+        const todayKey = formatDateKey(new Date(), hotelTz);
+        const checkInKey = formatDateKey(stay.scheduledCheckIn, hotelTz);
+        return Boolean(todayKey && checkInKey && checkInKey <= todayKey);
+    }, [hotelTz]);
+
     const showScheduledCheckInModal = (details: { roomId: string; roomLabel: string; stay: ManagerRoomStay }) => {
         if (!data?.shift) {
             toast('Сначала откройте смену, чтобы заселить гостя', 'error');
+            return;
+        }
+        if (!canCheckInScheduledStay(details.stay)) {
+            toast('Эта бронь на будущую дату. Заселение будет доступно в день заезда', 'error');
             return;
         }
 
@@ -1085,6 +1220,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: details.stay.guestPhone?.trim() || '',
             companyName: details.stay.companyName?.trim() || '',
             bookingSource: details.stay.bookingSource?.trim() || '',
+            mealPlan: details.stay.mealPlan ?? [],
             notes: details.stay.notes?.trim() || '',
             targetRoomId: '',
             transferNote: '',
@@ -1093,7 +1229,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             checkOut: formatDateInputValue(new Date(details.stay.scheduledCheckOut)),
             cashAmount: '',
             cardAmount: '',
-            onlineAmount: ''
+            onlineAmount: '',
+            existingPaid: details.stay.amountPaid ?? 0
         });
         setBookingDetails(null);
         setCheckInError(null);
@@ -1101,6 +1238,10 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
     const handleCancelBooking = async () => {
         if (!bookingDetails) {
+            return;
+        }
+        if (!canEditStayPayments) {
+            toast('Отмена доступна только менеджеру с правом исправлений', 'error');
             return;
         }
         if (typeof window !== 'undefined' && !window.confirm(`Отменить бронь № ${bookingDetails.roomLabel}?`)) {
@@ -1144,6 +1285,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: room.stay.guestPhone?.trim() || '',
             companyName: room.stay.companyName?.trim() || '',
             bookingSource: room.stay.bookingSource?.trim() || '',
+            mealPlan: room.stay.mealPlan ?? [],
             notes: room.stay.notes?.trim() || '',
             targetRoomId: '',
             transferNote: '',
@@ -1152,7 +1294,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             checkOut: formatDateInputValue(new Date(room.stay.scheduledCheckOut)),
             cashAmount: '',
             cardAmount: '',
-            onlineAmount: ''
+            onlineAmount: '',
+            existingPaid: 0
         });
         setCheckInError(null);
     };
@@ -1181,6 +1324,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: room.stay.guestPhone?.trim() || '',
             companyName: room.stay.companyName?.trim() || '',
             bookingSource: room.stay.bookingSource?.trim() || '',
+            mealPlan: room.stay.mealPlan ?? [],
             notes: room.stay.notes?.trim() || '',
             targetRoomId: targetRoom.id,
             transferNote: '',
@@ -1189,9 +1333,75 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             checkOut: formatDateInputValue(new Date(room.stay.scheduledCheckOut)),
             cashAmount: '',
             cardAmount: '',
-            onlineAmount: ''
+            onlineAmount: '',
+            existingPaid: 0
         });
         setCheckInError(null);
+    };
+
+    const showPaymentAdjustModal = (room: ManagerStateResponse['rooms'][number]) => {
+        if (!canEditStayPayments) {
+            toast('Корректировка доступна только менеджеру с правом исправлений', 'error');
+            return;
+        }
+        if (!room.stay) {
+            toast('Нет проживания для корректировки', 'error');
+            return;
+        }
+
+        setPaymentAdjust({
+            roomId: room.id,
+            roomLabel: room.label,
+            stayId: room.stay.id,
+            guestName: room.stay.guestName?.trim() || 'Гость',
+            cashAmount: String((room.stay.cashPaid ?? 0) / 100 || ''),
+            cardAmount: String((room.stay.cardPaid ?? 0) / 100 || ''),
+            onlineAmount: String((room.stay.onlinePaid ?? 0) / 100 || '')
+        });
+        setPaymentAdjustError(null);
+    };
+
+    const handlePaymentAdjust = async () => {
+        if (!paymentAdjust) {
+            return;
+        }
+
+        const cashValue = Number(paymentAdjust.cashAmount || 0);
+        const cardValue = Number(paymentAdjust.cardAmount || 0);
+        const onlineValue = Number(paymentAdjust.onlineAmount || 0);
+
+        if (!Number.isFinite(cashValue) || cashValue < 0 || !Number.isFinite(cardValue) || cardValue < 0 || !Number.isFinite(onlineValue) || onlineValue < 0) {
+            setPaymentAdjustError('Сумма не может быть отрицательной или пустой');
+            return;
+        }
+
+        if (cashValue === 0 && cardValue === 0 && onlineValue === 0) {
+            setPaymentAdjustError('Укажите сумму оплаты');
+            return;
+        }
+
+        setIsSubmittingPaymentAdjust(true);
+        try {
+            await request(`/api/rooms/${paymentAdjust.roomId}/stay`, {
+                body: {
+                    shiftId: data?.shift?.id,
+                    stayId: paymentAdjust.stayId,
+                    intent: 'adjust-payments',
+                    cashAmount: toMinor(cashValue),
+                    cardAmount: toMinor(cardValue),
+                    onlineAmount: toMinor(onlineValue)
+                }
+            });
+            toast('Суммы обновлены', 'success');
+            setPaymentAdjust(null);
+            setPaymentAdjustError(null);
+            mutate();
+        } catch (error) {
+            console.error(error);
+            setPaymentAdjustError(error instanceof Error ? error.message : 'Не удалось обновить суммы');
+        } finally {
+            setIsSubmittingPaymentAdjust(false);
+        }
     };
 
     const handleConfirmCheckIn = async () => {
@@ -1259,17 +1469,22 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             }
         }
 
-        const cashValue = checkInModal.mode === 'book' ? 0 : Number(checkInModal.cashAmount || 0);
-        const cardValue = checkInModal.mode === 'book' ? 0 : Number(checkInModal.cardAmount || 0);
-        const onlineValue = checkInModal.mode === 'book' ? 0 : Number(checkInModal.onlineAmount || 0);
+        const cashValue = Number(checkInModal.cashAmount || 0);
+        const cardValue = Number(checkInModal.cardAmount || 0);
+        const onlineValue = Number(checkInModal.onlineAmount || 0);
 
         if (!Number.isFinite(cashValue) || cashValue < 0 || !Number.isFinite(cardValue) || cardValue < 0 || !Number.isFinite(onlineValue) || onlineValue < 0) {
             setCheckInError('Сумма не может быть отрицательной или пустой');
             return;
         }
 
-        if (checkInModal.mode === 'checkin' && cashValue === 0 && cardValue === 0 && onlineValue === 0) {
+        if (checkInModal.mode === 'checkin' && cashValue === 0 && cardValue === 0 && onlineValue === 0 && checkInModal.existingPaid <= 0) {
             setCheckInError('Укажите оплату наличными, безналичными и/или на сайте');
+            return;
+        }
+
+        if (checkInModal.mode === 'book' && (cashValue > 0 || cardValue > 0) && !activeShiftId) {
+            setCheckInError('Для наличной или безналичной предоплаты откройте смену');
             return;
         }
 
@@ -1281,13 +1496,14 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         try {
             await request(`/api/rooms/${checkInModal.roomId}/stay`, {
                 body: {
-                    shiftId: checkInModal.mode === 'book' ? undefined : activeShiftId,
+                    shiftId: checkInModal.mode === 'book' ? (cashMinor > 0 || cardMinor > 0 ? activeShiftId : undefined) : activeShiftId,
                     stayId: checkInModal.stayId,
                     intent: checkInModal.mode,
                     guestName: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? checkInModal.guestName.trim() || undefined : undefined,
                     guestPhone: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? checkInModal.guestPhone.trim() || undefined : undefined,
                     companyName: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? checkInModal.companyName.trim() || undefined : undefined,
                     bookingSource: (checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && data?.hotel.usesExtranets ? checkInModal.bookingSource || undefined : undefined,
+                    mealPlan: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? checkInModal.mealPlan : undefined,
                     notes: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? checkInModal.notes.trim() || undefined : undefined,
                     scheduledCheckIn: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? scheduledCheckIn!.toISOString() : undefined,
                     scheduledCheckOut: scheduledCheckOut.toISOString(),
@@ -1505,7 +1721,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                 size="sm"
                                                 variant="secondary"
                                                 className="gap-1.5 border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200"
-                                                disabled={!hasOpenShift}
+                                                disabled={!hasOpenShift || !canEditStayPayments}
                                                 onClick={showConfirmTransfersModal}
                                             >
                                                 <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
@@ -1539,7 +1755,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     <button
                                         type="button"
                                         className={`rounded-2xl border px-3 py-2 text-left shadow-[0_10px_24px_-22px_rgba(15,23,42,0.34)] transition ${pendingTransferRooms.length ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200' : 'border-slate-200 bg-white text-slate-500 dark:border-white/[0.055] dark:bg-white/[0.035] dark:text-white/40'}`}
-                                        disabled={!pendingTransferRooms.length}
+                                        disabled={!pendingTransferRooms.length || !canEditStayPayments}
                                         onClick={showConfirmTransfersModal}
                                     >
                                         <p className="text-[10px] uppercase tracking-[0.18em]">Ожидает перевода</p>
@@ -1554,12 +1770,34 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     <div className="space-y-3">
                                         <div className="flex flex-wrap items-center justify-between gap-2">
                                             <div className="flex flex-wrap gap-1.5">
-                                                <Badge label="Бронь" />
-                                                <Badge label="Заселён" tone="warning" />
-                                                <Badge label="Просрочено" tone="danger" />
-                                                <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 dark:border-white/[0.06] dark:bg-white/[0.04] dark:text-white/45">
-                                                    Свободные даты
-                                                </span>
+                                                <button
+                                                    type="button"
+                                                    className="inline-flex items-center gap-1 rounded-2xl border border-cyan-300 bg-cyan-50 px-2.5 py-1 text-[11px] font-medium text-cyan-900 transition hover:bg-cyan-100 dark:border-cyan-300/35 dark:bg-cyan-400/15 dark:text-cyan-100 dark:hover:bg-cyan-400/20"
+                                                    onClick={() => setBoardListPopup('scheduled')}
+                                                >
+                                                    Бронь <span className="font-semibold">{boardScheduledItems.length}</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="inline-flex items-center gap-1 rounded-2xl border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber/15 dark:bg-amber/15 dark:text-amber dark:hover:bg-amber/20"
+                                                    onClick={() => setBoardListPopup('checkedIn')}
+                                                >
+                                                    Заселён <span className="font-semibold">{boardCheckedInItems.length}</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="inline-flex items-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-700 transition hover:bg-rose-100 dark:border-rose-500/15 dark:bg-rose-500/15 dark:text-rose-400 dark:hover:bg-rose-500/20"
+                                                    onClick={() => setBoardListPopup('overdue')}
+                                                >
+                                                    Просрочено <span className="font-semibold">{boardOverdueItems.length}</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="inline-flex items-center gap-1 rounded-2xl border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 transition hover:bg-slate-100 dark:border-white/[0.06] dark:bg-white/[0.04] dark:text-white/55 dark:hover:bg-white/[0.08]"
+                                                    onClick={() => setBoardListPopup('freeDates')}
+                                                >
+                                                    Свободные даты <span className="font-semibold">{boardFreeDateItems.length}</span>
+                                                </button>
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 <Button
@@ -1716,6 +1954,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                         })();
                                         const bookingSourceLabel = room.stay?.bookingSource?.trim() ? `источник ${room.stay.bookingSource.trim()}` : null;
                                         const contactLabel = [room.stay?.companyName?.trim(), room.stay?.guestPhone?.trim()].filter(Boolean).join(' · ');
+                                        const roomMealLabels = mealPlanLabels(room.stay?.mealPlan);
 
                                         return (
                                             <article key={room.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white px-3 py-3 shadow-[0_10px_28px_-24px_rgba(15,23,42,0.34)] transition hover:border-slate-300 hover:shadow-md dark:border-white/[0.055] dark:bg-white/[0.035] dark:shadow-none">
@@ -1729,11 +1968,11 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                     </div>
                                                     {isOccupied ? (
                                                         <div className="flex flex-wrap items-center justify-end gap-1.5">
-                                                            <Button
-                                                                type="button"
-                                                                size="icon"
-                                                                variant="secondary"
-                                                                className="h-8 w-8 rounded-xl"
+                                                             <Button
+                                                                 type="button"
+                                                                 size="icon"
+                                                                 variant="secondary"
+                                                                 className="h-8 w-8 rounded-xl"
                                                                 disabled={!hasOpenShift || !availableTransferRooms.length}
                                                                 onClick={() => showTransferModal(room)}
                                                                 title="Переселить"
@@ -1750,12 +1989,25 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                                 onClick={() => showExtendModal(room)}
                                                                 title="Продлить"
                                                                 aria-label={`Продлить проживание в номере ${room.label}`}
-                                                            >
-                                                                <CalendarPlus className="h-4 w-4" aria-hidden="true" />
-                                                            </Button>
-                                                            <Button
-                                                                type="button"
-                                                                size="icon"
+                                                             >
+                                                                 <CalendarPlus className="h-4 w-4" aria-hidden="true" />
+                                                             </Button>
+                                                             {canEditStayPayments ? (
+                                                                 <Button
+                                                                     type="button"
+                                                                     size="icon"
+                                                                     variant="secondary"
+                                                                     className="h-8 w-8 rounded-xl"
+                                                                     onClick={() => showPaymentAdjustModal(room)}
+                                                                     title="Исправить суммы"
+                                                                     aria-label={`Исправить суммы в номере ${room.label}`}
+                                                                 >
+                                                                     <Banknote className="h-4 w-4" aria-hidden="true" />
+                                                                 </Button>
+                                                             ) : null}
+                                                             <Button
+                                                                 type="button"
+                                                                 size="icon"
                                                                 variant="ghost"
                                                                 className="h-8 w-8 rounded-xl text-rose-600 hover:text-rose-700 dark:text-rose-300/70 dark:hover:text-rose-300"
                                                                 disabled={!hasOpenShift}
@@ -1797,6 +2049,15 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                 {room.stay && (
                                                     <div className={`mt-1 space-y-1 text-[11px] leading-snug ${isOverdue ? 'text-rose-700 dark:text-rose-300' : 'text-slate-600 dark:text-white/45'}`}>
                                                         <p className="break-words font-medium text-slate-800 dark:text-white/70">{guestLabel}</p>
+                                                        {roomMealLabels.length ? (
+                                                            <div className="flex flex-wrap gap-1">
+                                                                {roomMealLabels.map((label) => (
+                                                                    <span key={`room-meal-${room.id}-${label}`} className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200">
+                                                                        {label}
+                                                                    </span>
+                                                                ))}
+                                                            </div>
+                                                        ) : null}
                                                         <p className="break-words">{formatDateTime(room.stay.scheduledCheckIn, hotelTz)} - {isOverdue ? 'просрочено с ' : ''}{formatDateTime(room.stay.scheduledCheckOut, hotelTz)}</p>
                                                         {room.stay.amountPaid != null && (
                                                             <p className="break-words">{formatKgs(room.stay.amountPaid)}{paymentLabel ? ` · ${paymentLabel}` : ''}{bookingSourceLabel ? ` · ${bookingSourceLabel}` : ''}</p>
@@ -2382,6 +2643,29 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     </div>
 
                                     <div>
+                                        <p className="mb-2 text-[11px] text-white/40">Питание</p>
+                                        <div className="flex flex-wrap gap-2">
+                                            {MEAL_PLAN_OPTIONS.map((option) => {
+                                                const checked = groupCheckIn.mealPlan.includes(option.value);
+                                                return (
+                                                    <label
+                                                        key={`group-meal-${option.value}`}
+                                                        className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${checked ? 'border-emerald-400/40 bg-emerald-400/12 text-emerald-100' : 'border-white/[0.08] bg-white/[0.04] text-white/70 hover:bg-white/[0.07]'}`}
+                                                    >
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={checked}
+                                                            onChange={() => toggleGroupMealPlan(option.value)}
+                                                            className="accent-emerald-500"
+                                                        />
+                                                        {option.label}
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+
+                                    <div>
                                         <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-notes">Комментарий</label>
                                         <TextArea
                                             id="group-notes"
@@ -2576,6 +2860,30 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             )}
                                             {(checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (
                                                 <div>
+                                                    <p className="mb-2 text-[11px] text-white/40">Питание</p>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {MEAL_PLAN_OPTIONS.map((option) => {
+                                                            const checked = checkInModal.mealPlan.includes(option.value);
+                                                            return (
+                                                                <label
+                                                                    key={`modal-meal-${option.value}`}
+                                                                    className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${checked ? 'border-emerald-400/40 bg-emerald-400/12 text-emerald-100' : 'border-white/[0.08] bg-white/[0.04] text-white/70 hover:bg-white/[0.07]'}`}
+                                                                >
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={checked}
+                                                                        onChange={() => toggleCheckInMealPlan(option.value)}
+                                                                        className="accent-emerald-500"
+                                                                    />
+                                                                    {option.label}
+                                                                </label>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {(checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (
+                                                <div>
                                                     <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-stay-notes">Комментарий</label>
                                                     <TextArea
                                                         id="modal-stay-notes"
@@ -2643,15 +2951,17 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                 </div>
                                             )}
                                             {checkInModal.mode === 'book' && (
-                                                <p className="text-[11px] text-white/45">Бронь сохранится без оплаты и без открытия смены. Заселение делается отдельно в день заезда.</p>
+                                                <p className="text-[11px] text-white/45">Предоплату можно оставить нулевой. Для наличной или безналичной предоплаты нужна открытая смена.</p>
+                                            )}
+                                            {checkInModal.mode === 'checkin' && checkInModal.existingPaid > 0 && (
+                                                <p className="text-[11px] text-emerald-200/80">Учтена предоплата: {formatKgs(checkInModal.existingPaid)}. Здесь можно указать только доплату.</p>
                                             )}
                                             {checkInModal.mode === 'extend' && (
                                                 <p className="text-[11px] text-white/45">Укажите новый выезд позже текущего. Доплату можно оставить нулевой, если продление без оплаты.</p>
                                             )}
-                                            {checkInModal.mode !== 'book' && (
                                             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                                                 <div>
-                                                    <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-cash">{checkInModal.mode === 'extend' ? 'Доплата нал' : 'Наличные'}</label>
+                                                    <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-cash">{checkInModal.mode === 'book' ? 'Предоплата нал' : checkInModal.mode === 'extend' ? 'Доплата нал' : 'Наличные'}</label>
                                                     <Input
                                                         id="modal-cash"
                                                         type="number"
@@ -2668,7 +2978,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                     />
                                                 </div>
                                                 <div>
-                                                    <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-card">{checkInModal.mode === 'extend' ? 'Доплата безнал' : 'Безнал'}</label>
+                                                    <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-card">{checkInModal.mode === 'book' ? 'Предоплата б/н' : checkInModal.mode === 'extend' ? 'Доплата безнал' : 'Безнал'}</label>
                                                     <Input
                                                         id="modal-card"
                                                         type="number"
@@ -2685,7 +2995,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                     />
                                                 </div>
                                                 <div>
-                                                    <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-online">{checkInModal.mode === 'extend' ? 'Доплата сайт' : 'На сайте'}</label>
+                                                    <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-online">{checkInModal.mode === 'book' ? 'Предоплата сайт' : checkInModal.mode === 'extend' ? 'Доплата сайт' : 'На сайте'}</label>
                                                     <Input
                                                         id="modal-online"
                                                         type="number"
@@ -2702,7 +3012,6 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                     />
                                                 </div>
                                             </div>
-                                            )}
                                         </>
                                     )}
                                     {checkInError && <p className="text-xs text-rose-300">{checkInError}</p>}
@@ -2719,6 +3028,113 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                         </div>
                     )
                     }
+
+                    {boardListPopup && (() => {
+                        const isFreeDatesPopup = boardListPopup === 'freeDates';
+                        const stayItems = boardListPopup === 'scheduled'
+                            ? boardScheduledItems
+                            : boardListPopup === 'checkedIn'
+                                ? boardCheckedInItems
+                                : boardOverdueItems;
+                        const title = boardListPopup === 'scheduled'
+                            ? 'Брони'
+                            : boardListPopup === 'checkedIn'
+                                ? 'Заселённые'
+                                : boardListPopup === 'overdue'
+                                    ? 'Просрочено'
+                                    : 'Свободные даты';
+                        const count = isFreeDatesPopup ? boardFreeDateItems.length : stayItems.length;
+                        const periodLabel = `${formatBoardDay(roomBoardRange.start)} - ${formatBoardDay(addDays(roomBoardRange.end, -1))}`;
+
+                        return (
+                            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-3 py-4 backdrop-blur-sm">
+                                <Card className="flex max-h-[88dvh] w-full max-w-lg flex-col overflow-hidden border-white/[0.08] bg-ink p-0 text-white shadow-2xl dark:bg-ink">
+                                    <div className="flex items-start justify-between gap-3 border-b border-white/[0.08] px-4 py-3 sm:px-5">
+                                        <div className="min-w-0">
+                                            <p className="text-[11px] uppercase tracking-[0.22em] text-white/40">Шахматка · {periodLabel}</p>
+                                            <h3 className="mt-1 text-lg font-semibold">{title}</h3>
+                                            <p className="mt-1 text-xs text-white/45">{count} записей</p>
+                                        </div>
+                                        <Button type="button" variant="ghost" size="sm" onClick={() => setBoardListPopup(null)}>
+                                            ×
+                                        </Button>
+                                    </div>
+
+                                    <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+                                        {isFreeDatesPopup ? (
+                                            boardFreeDateItems.length ? (
+                                                <div className="space-y-2">
+                                                    {boardFreeDateItems.map((item) => {
+                                                        const lastFreeDay = addDays(item.endDate, -1);
+                                                        const rangeLabel = item.startIndex + 1 === item.endIndex
+                                                            ? formatBoardDay(item.startDate)
+                                                            : `${formatBoardDay(item.startDate)} - ${formatBoardDay(lastFreeDay)}`;
+
+                                                        return (
+                                                            <button
+                                                                key={`free-${item.room.id}-${item.startIndex}-${item.endIndex}`}
+                                                                type="button"
+                                                                className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2.5 text-left transition hover:border-cyan-200/40 hover:bg-cyan-300/10"
+                                                                onClick={() => {
+                                                                    setBoardListPopup(null);
+                                                                    handleBoardCellClick(item.room, item.startDate);
+                                                                }}
+                                                            >
+                                                                <div className="flex items-center justify-between gap-3">
+                                                                    <div className="min-w-0">
+                                                                        <p className="truncate text-sm font-semibold">№ {item.room.label}</p>
+                                                                        {item.room.floor ? <p className="mt-0.5 truncate text-[11px] text-white/40">{item.room.floor}</p> : null}
+                                                                    </div>
+                                                                    <p className="shrink-0 text-xs font-semibold text-cyan-100">{rangeLabel}</p>
+                                                                </div>
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            ) : (
+                                                <p className="py-8 text-center text-sm text-white/45">Свободных интервалов в этом периоде нет.</p>
+                                            )
+                                        ) : stayItems.length ? (
+                                            <div className="space-y-2">
+                                                {stayItems.map((item) => (
+                                                    <button
+                                                        key={`board-list-${item.room.id}-${item.stay.id}`}
+                                                        type="button"
+                                                        className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2.5 text-left transition hover:border-white/20 hover:bg-white/[0.07]"
+                                                        onClick={() => {
+                                                            setBoardListPopup(null);
+                                                            if (item.stay.status === 'SCHEDULED') {
+                                                                showBookingDetails(item.room, item.stay);
+                                                            } else {
+                                                                showExtendModal(item.room);
+                                                            }
+                                                        }}
+                                                    >
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <p className="truncate text-sm font-semibold">№ {item.room.label} · {item.guestLabel}</p>
+                                                                <p className="mt-1 truncate text-xs text-white/55">{item.detailLabel || stayStatusLabel(item.stay.status)}</p>
+                                                            </div>
+                                                            <Badge label={item.isOverdue ? 'Просрочено' : stayStatusLabel(item.stay.status)} tone={item.isOverdue ? 'danger' : item.stay.status === 'CHECKED_IN' ? 'warning' : 'default'} />
+                                                        </div>
+                                                        <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-white/45">
+                                                            <span>Заезд: <span className="text-white/75">{formatDateTime(item.stay.scheduledCheckIn, hotelTz)}</span></span>
+                                                            <span>Выезд: <span className="text-white/75">{formatDateTime(item.stay.scheduledCheckOut, hotelTz)}</span></span>
+                                                        </div>
+                                                        {(item.stay.amountPaid ?? 0) > 0 ? (
+                                                            <p className="mt-1 text-[11px] text-emerald-200/80">Оплата: {formatKgs(item.stay.amountPaid)}</p>
+                                                        ) : null}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <p className="py-8 text-center text-sm text-white/45">Записей в этом периоде нет.</p>
+                                        )}
+                                    </div>
+                                </Card>
+                            </div>
+                        );
+                    })()}
 
                     {boardDayAction && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-3 py-4 backdrop-blur-sm">
@@ -2800,6 +3216,24 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             {bookingDetails.stay.bookingSource ? <p>Источник: <span className="text-white">{bookingDetails.stay.bookingSource}</span></p> : null}
                                         </div>
                                     )}
+                                    {(bookingDetails.stay.amountPaid ?? 0) > 0 ? (
+                                        <div className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 px-3 py-2.5">
+                                            <p className="text-[11px] uppercase tracking-[0.18em] text-emerald-100/55">Предоплата</p>
+                                            <p className="mt-1 text-sm font-semibold text-emerald-100">{formatKgs(bookingDetails.stay.amountPaid)}</p>
+                                        </div>
+                                    ) : null}
+                                    {mealPlanLabels(bookingDetails.stay.mealPlan).length ? (
+                                        <div className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 px-3 py-2.5">
+                                            <p className="text-[11px] uppercase tracking-[0.18em] text-emerald-100/55">Питание</p>
+                                            <div className="mt-2 flex flex-wrap gap-1.5">
+                                                {mealPlanLabels(bookingDetails.stay.mealPlan).map((label) => (
+                                                    <span key={`booking-meal-${label}`} className="rounded-full bg-emerald-300/15 px-2 py-1 text-[11px] font-semibold text-emerald-100">
+                                                        {label}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ) : null}
                                     {bookingDetails.stay.notes?.trim() ? (
                                         <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] px-3 py-2.5">
                                             <p className="text-[11px] uppercase tracking-[0.18em] text-white/35">Комментарий</p>
@@ -2812,7 +3246,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     <Button
                                         type="button"
                                         className="sm:col-span-2"
-                                        disabled={!hasOpenShift || isCancellingBooking}
+                                        disabled={!hasOpenShift || isCancellingBooking || !canCheckInScheduledStay(bookingDetails.stay)}
                                         onClick={() => showScheduledCheckInModal(bookingDetails)}
                                     >
                                         Заселить по брони
@@ -2820,15 +3254,125 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     <Button
                                         type="button"
                                         variant="danger"
-                                        disabled={isCancellingBooking}
+                                        disabled={isCancellingBooking || !canEditStayPayments}
                                         onClick={handleCancelBooking}
                                     >
                                         {isCancellingBooking ? '...' : 'Отменить'}
                                     </Button>
                                 </div>
+                                {!canEditStayPayments ? (
+                                    <p className="text-center text-[11px] text-white/40">Отмена доступна только менеджеру с правом исправлений.</p>
+                                ) : null}
+                                {!canCheckInScheduledStay(bookingDetails.stay) ? (
+                                    <p className="text-center text-[11px] text-white/40">Заселение будет доступно в день заезда.</p>
+                                ) : null}
                                 {!hasOpenShift ? (
                                     <p className="text-center text-[11px] text-white/40">Для заселения сначала откройте смену.</p>
                                 ) : null}
+                            </Card>
+                        </div>
+                    )}
+
+                    {paymentAdjust && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-3 py-4 backdrop-blur-sm">
+                            <Card className="w-full max-w-sm space-y-4 border-white/[0.08] bg-ink p-4 text-white shadow-2xl dark:bg-ink sm:p-5">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/40">Исправить оплату</p>
+                                        <h3 className="mt-1 text-lg font-semibold">№ {paymentAdjust.roomLabel}</h3>
+                                        <p className="mt-1 truncate text-xs text-white/45">{paymentAdjust.guestName}</p>
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => {
+                                            setPaymentAdjust(null);
+                                            setPaymentAdjustError(null);
+                                        }}
+                                    >
+                                        ×
+                                    </Button>
+                                </div>
+
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                    <div>
+                                        <label className="mb-1 block text-[11px] text-white/40" htmlFor="payment-adjust-cash">Наличные</label>
+                                        <Input
+                                            id="payment-adjust-cash"
+                                            type="number"
+                                            step="0.01"
+                                            inputMode="decimal"
+                                            value={paymentAdjust.cashAmount}
+                                            onChange={(event) =>
+                                                setPaymentAdjust((prev) =>
+                                                    prev ? { ...prev, cashAmount: event.target.value } : prev
+                                                )
+                                            }
+                                            placeholder="0"
+                                            className="text-white"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="mb-1 block text-[11px] text-white/40" htmlFor="payment-adjust-card">Безнал</label>
+                                        <Input
+                                            id="payment-adjust-card"
+                                            type="number"
+                                            step="0.01"
+                                            inputMode="decimal"
+                                            value={paymentAdjust.cardAmount}
+                                            onChange={(event) =>
+                                                setPaymentAdjust((prev) =>
+                                                    prev ? { ...prev, cardAmount: event.target.value } : prev
+                                                )
+                                            }
+                                            placeholder="0"
+                                            className="text-white"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="mb-1 block text-[11px] text-white/40" htmlFor="payment-adjust-online">На сайте</label>
+                                        <Input
+                                            id="payment-adjust-online"
+                                            type="number"
+                                            step="0.01"
+                                            inputMode="decimal"
+                                            value={paymentAdjust.onlineAmount}
+                                            onChange={(event) =>
+                                                setPaymentAdjust((prev) =>
+                                                    prev ? { ...prev, onlineAmount: event.target.value } : prev
+                                                )
+                                            }
+                                            placeholder="0"
+                                            className="text-white"
+                                        />
+                                    </div>
+                                </div>
+
+                                <p className="text-[11px] text-white/40">Введите итоговые суммы по проживанию. Наличные и безнал обновят записи кассы.</p>
+                                {paymentAdjustError ? <p className="text-xs text-rose-300">{paymentAdjustError}</p> : null}
+                                <div className="flex gap-2">
+                                    <Button
+                                        type="button"
+                                        variant="secondary"
+                                        className="flex-1"
+                                        onClick={() => {
+                                            setPaymentAdjust(null);
+                                            setPaymentAdjustError(null);
+                                        }}
+                                        disabled={isSubmittingPaymentAdjust}
+                                    >
+                                        Отмена
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        className="flex-1"
+                                        onClick={handlePaymentAdjust}
+                                        disabled={isSubmittingPaymentAdjust}
+                                    >
+                                        {isSubmittingPaymentAdjust ? 'Сохраняем...' : 'Сохранить'}
+                                    </Button>
+                                </div>
                             </Card>
                         </div>
                     )}

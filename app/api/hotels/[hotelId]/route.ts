@@ -415,6 +415,7 @@ export async function GET(_request: NextRequest, { params }: { params: { hotelId
                         cardPaid: stay.cardPaid,
                         onlinePaid: stayRecord.onlinePaid,
                         bookingSource: stayRecord.bookingSource,
+                        mealPlan: stayRecord.mealPlan,
                         shiftId: stayRecord.shift?.id ?? null,
                         shiftNumber: stayRecord.shift?.number ?? null,
                         shiftStatus: stayRecord.shift?.status ?? null,
@@ -468,7 +469,8 @@ export async function GET(_request: NextRequest, { params }: { params: { hotelId
                 username: assignment.user.username,
                 pinCode: assignment.pinCode,
                 shiftPayAmount: assignment.shiftPayAmount,
-                revenueSharePct: assignment.revenueSharePct
+                revenueSharePct: assignment.revenueSharePct,
+                canEditStayPayments: assignment.canEditStayPayments
             })),
             activeShift: activeShiftRecord
                 ? {
@@ -511,6 +513,7 @@ export async function GET(_request: NextRequest, { params }: { params: { hotelId
                 cardPaid: stay.cardPaid,
                 onlinePaid: stay.onlinePaid,
                 bookingSource: stay.bookingSource,
+                mealPlan: stay.mealPlan,
                 shiftId: stay.shift?.id ?? null,
                 shiftNumber: stay.shift?.number ?? null,
                 shiftStatus: stay.shift?.status ?? null,
