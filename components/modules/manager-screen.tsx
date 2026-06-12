@@ -1,7 +1,7 @@
 'use client';
 
 import useSWR from 'swr';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '@/components/ui/toast';
 import { useForm } from 'react-hook-form';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,16 @@ import { useCookieApi } from '@/hooks/useCookieApi';
 import { formatDateKey, formatDateTime, formatInputValue, parseInputValue, formatMoney } from '@/lib/timezone';
 import { isCollectionLedgerEntry } from '@/lib/ledger';
 import { MEAL_PLAN_OPTIONS, mealPlanLabels } from '@/lib/meal-plan';
+import {
+    cacheManagerState,
+    enqueueManagerOfflineOperation,
+    flushManagerOfflineQueue,
+    getManagerQueueChangeEvent,
+    isLikelyOfflineError,
+    readCachedManagerState,
+    readManagerOfflineQueue,
+    type OfflineOperation
+} from '@/lib/offline';
 import { ArrowRightLeft, Banknote, CalendarPlus, CheckCircle2, LogIn, LogOut, Sparkles, Users } from 'lucide-react';
 
 type ManagerRoomStay = {
@@ -300,6 +310,14 @@ const boardSectionLabel = (floor?: string | null) => {
 
 export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?: () => void }) => {
     const { get, request } = useCookieApi();
+    const hotelId = user.hotels[0]?.id;
+    const syncInFlightRef = useRef(false);
+    const [cachedState, setCachedState] = useState<ManagerStateResponse | null>(null);
+    const [cachedAt, setCachedAt] = useState<string | null>(null);
+    const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine);
+    const [pendingOfflineCount, setPendingOfflineCount] = useState(0);
+    const [isSyncingOffline, setIsSyncingOffline] = useState(false);
+    const [offlineSyncError, setOfflineSyncError] = useState<string | null>(null);
 
     const handleLogout = async () => {
         await fetch('/api/session/logout', { method: 'POST' });
@@ -309,11 +327,14 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         }
     };
 
-    const { data, mutate, isLoading, error, isValidating } = useSWR<ManagerStateResponse>(
-        user.hotels[0]?.id ? ['manager-state', user.hotels[0].id] : null,
+    const { data: liveData, mutate, isLoading, error, isValidating } = useSWR<ManagerStateResponse>(
+        hotelId ? ['manager-state', hotelId] : null,
         ([, hotelId]) => get(`/api/manager/state?hotelId=${hotelId}`),
-        { refreshInterval: 30_000 }
+        { refreshInterval: isOnline ? 30_000 : 0, revalidateOnReconnect: true }
     );
+
+    const data = liveData ?? cachedState;
+    const isUsingCachedState = !liveData && Boolean(cachedState);
 
     const hotelTz = data?.hotel?.timezone;
     const hotelCur = data?.hotel?.currency;
@@ -359,6 +380,46 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
     const [updatingCleaningRoomId, setUpdatingCleaningRoomId] = useState<string | null>(null);
     const [checkoutConfirm, setCheckoutConfirm] = useState<{ roomId: string; roomLabel: string; guestName: string } | null>(null);
     const { toast } = useToast();
+    const refreshOfflineQueueCount = useCallback(() => {
+        setPendingOfflineCount(readManagerOfflineQueue().length);
+    }, []);
+
+    useEffect(() => {
+        if (!hotelId) return;
+        const cached = readCachedManagerState<ManagerStateResponse>(hotelId);
+        if (cached) {
+            setCachedState(cached.state);
+            setCachedAt(cached.cachedAt);
+        }
+    }, [hotelId]);
+
+    useEffect(() => {
+        if (!hotelId || !liveData) return;
+        cacheManagerState(hotelId, liveData);
+        setCachedState(liveData);
+        setCachedAt(new Date().toISOString());
+    }, [hotelId, liveData]);
+
+    useEffect(() => {
+        refreshOfflineQueueCount();
+
+        const handleOnline = () => setIsOnline(true);
+        const handleOffline = () => setIsOnline(false);
+        const handleQueueChange = () => refreshOfflineQueueCount();
+
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+        window.addEventListener(getManagerQueueChangeEvent(), handleQueueChange);
+        window.addEventListener('storage', handleQueueChange);
+
+        return () => {
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
+            window.removeEventListener(getManagerQueueChangeEvent(), handleQueueChange);
+            window.removeEventListener('storage', handleQueueChange);
+        };
+    }, [refreshOfflineQueueCount]);
+
     const {
         data: profileData,
         mutate: refreshProfile,
@@ -368,6 +429,79 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         isProfileOpen || activePanel === 'history' ? 'manager-profile' : null,
         () => get<ManagerProfileResponse>('/api/manager/profile')
     );
+
+    const flushOfflineOperations = useCallback(async () => {
+        if (!isOnline || syncInFlightRef.current || readManagerOfflineQueue().length === 0) {
+            return;
+        }
+
+        syncInFlightRef.current = true;
+        setIsSyncingOffline(true);
+        setOfflineSyncError(null);
+
+        try {
+            const result = await flushManagerOfflineQueue((operation: OfflineOperation) =>
+                request(operation.path, operation.options)
+            );
+            refreshOfflineQueueCount();
+
+            if (result.synced > 0) {
+                toast(`Синхронизировано операций: ${result.synced}`, 'success');
+                await mutate();
+            }
+
+            if (result.remaining > 0) {
+                setOfflineSyncError(result.firstError ?? 'Часть операций не синхронизирована');
+            }
+        } finally {
+            syncInFlightRef.current = false;
+            setIsSyncingOffline(false);
+        }
+    }, [isOnline, mutate, refreshOfflineQueueCount, request, toast]);
+
+    useEffect(() => {
+        if (isOnline && pendingOfflineCount > 0) {
+            void flushOfflineOperations();
+        }
+    }, [flushOfflineOperations, isOnline, pendingOfflineCount]);
+
+    const sendManagerRequest = useCallback(
+        async <T,>(path: string, options: { method?: string; body?: unknown } | undefined, label: string) => {
+            if (!isOnline) {
+                enqueueManagerOfflineOperation({ path, options, label });
+                refreshOfflineQueueCount();
+                toast(`${label}: сохранено локально`, 'success');
+                return null as T | null;
+            }
+
+            try {
+                return await request<T>(path, options);
+            } catch (requestError) {
+                if (isLikelyOfflineError(requestError)) {
+                    setIsOnline(false);
+                    enqueueManagerOfflineOperation({ path, options, label });
+                    refreshOfflineQueueCount();
+                    toast(`${label}: сохранено локально`, 'success');
+                    return null as T | null;
+                }
+                throw requestError;
+            }
+        },
+        [isOnline, refreshOfflineQueueCount, request, toast]
+    );
+
+    const refreshManagerState = useCallback(async () => {
+        try {
+            await mutate();
+        } catch (refreshError) {
+            if (isLikelyOfflineError(refreshError)) {
+                setIsOnline(false);
+                return;
+            }
+            throw refreshError;
+        }
+    }, [mutate]);
+
     const ExitButton = () => (
         <button
             type="button"
@@ -412,6 +546,55 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             pending: compensation.pendingPayout ?? null
         }
         : null;
+    const cachedAtLabel = cachedAt ? formatDateTime(cachedAt, hotelTz) : null;
+    const showOfflineStatus = !isOnline || isUsingCachedState || pendingOfflineCount > 0 || Boolean(offlineSyncError) || isSyncingOffline;
+    const offlineStatusTitle = !isOnline
+        ? 'Офлайн-режим'
+        : isSyncingOffline
+            ? 'Синхронизация'
+            : pendingOfflineCount > 0
+                ? 'Ожидает синхронизации'
+                : isUsingCachedState
+                    ? 'Локальный снимок'
+                    : 'Синхронизировано';
+    const offlineStatusDetail = [
+        isUsingCachedState && cachedAtLabel ? `данные от ${cachedAtLabel}` : null,
+        pendingOfflineCount > 0 ? `${pendingOfflineCount} операций в очереди` : null,
+        offlineSyncError ? `ошибка: ${offlineSyncError}` : null,
+    ].filter(Boolean).join(' · ');
+    const OfflineStatusBanner = () => {
+        if (!showOfflineStatus) {
+            return null;
+        }
+
+        return (
+            <div className={`rounded-xl border px-3 py-2 text-xs shadow-sm ${offlineSyncError
+                ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-200'
+                : !isOnline || isUsingCachedState
+                    ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100'
+                    : 'border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-300/20 dark:bg-cyan-400/10 dark:text-cyan-100'
+                }`}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                        <p className="font-semibold">{offlineStatusTitle}</p>
+                        {offlineStatusDetail ? (
+                            <p className="mt-0.5 break-words opacity-80">{offlineStatusDetail}</p>
+                        ) : null}
+                    </div>
+                    {isOnline && pendingOfflineCount > 0 ? (
+                        <button
+                            type="button"
+                            onClick={() => void flushOfflineOperations()}
+                            disabled={isSyncingOffline}
+                            className="shrink-0 rounded-lg border border-current/20 px-2 py-1 font-semibold transition hover:bg-white/30 disabled:opacity-50"
+                        >
+                            {isSyncingOffline ? 'Синхронизация...' : 'Синхронизировать'}
+                        </button>
+                    ) : null}
+                </div>
+            </div>
+        );
+    };
     const pendingPayoutMajor = typeof payoutSummary?.pending === 'number' ? payoutSummary.pending / 100 : 0;
     const isAutoManagerPayout = selectedExpenseEntryType === 'MANAGER_PAYOUT';
     const handleOpenProfile = () => setIsProfileOpen(true);
@@ -897,7 +1080,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             }
         });
         openShiftForm.reset({ openingCash: 0, note: '' });
-        mutate();
+        void refreshManagerState();
     });
 
     const handleCloseShift = handoverForm.handleSubmit(async (values) => {
@@ -925,7 +1108,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         if (!data?.shift) {
             throw new Error('Сначала откройте смену');
         }
-        await request('/api/expenses', {
+        await sendManagerRequest('/api/expenses', {
             body: {
                 hotelId: data.hotel.id,
                 shiftId: data.shift.id,
@@ -935,8 +1118,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                 note: values.note,
                 entryType: values.entryType
             }
-        });
-        await mutate();
+        }, 'Операция кассы');
+        await refreshManagerState();
         expenseForm.reset({
             amount: values.entryType === 'MANAGER_PAYOUT' ? pendingPayoutMajor : 0,
             method: values.method,
@@ -948,14 +1131,14 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
     const handleCheckout = async (roomId: string) => {
         if (!data?.shift) return;
-        await request(`/api/rooms/${roomId}/stay`, {
+        await sendManagerRequest(`/api/rooms/${roomId}/stay`, {
             body: {
                 shiftId: data.shift.id,
                 intent: 'checkout'
             }
-        });
+        }, 'Выселение');
         toast('Гость выселен', 'success');
-        mutate();
+        void refreshManagerState();
     };
 
     const showGroupCheckInModal = () => {
@@ -1060,7 +1243,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
         setIsSubmittingGroupCheckIn(true);
         try {
-            await request('/api/rooms/group-stay', {
+            await sendManagerRequest('/api/rooms/group-stay', {
                 body: {
                     action: groupCheckIn.mode === 'booking' ? 'group-booking' : 'group-checkin',
                     hotelId: data.hotel.id,
@@ -1078,11 +1261,11 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                     mealPlan: groupCheckIn.mealPlan,
                     notes: groupCheckIn.notes.trim() || undefined,
                 },
-            });
+            }, groupCheckIn.mode === 'booking' ? 'Групповая бронь' : 'Групповой заезд');
             toast(groupCheckIn.mode === 'booking' ? 'Групповая бронь создана' : 'Групповой заезд создан', 'success');
             setGroupCheckIn(null);
             setGroupCheckInError(null);
-            mutate();
+            void refreshManagerState();
         } catch (error) {
             console.error(error);
             setGroupCheckInError(error instanceof Error ? error.message : 'Не удалось создать групповой заезд');
@@ -1117,18 +1300,18 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         }
         setIsConfirmingTransfers(true);
         try {
-            await request('/api/rooms/group-stay', {
+            await sendManagerRequest('/api/rooms/group-stay', {
                 body: {
                     action: 'confirm-transfer',
                     hotelId: data.hotel.id,
                     shiftId: data.shift.id,
                     stayIds: confirmTransfers.stayIds,
                 },
-            });
+            }, 'Подтверждение переводов');
             toast('Переводы подтверждены', 'success');
             setConfirmTransfers(null);
             setConfirmTransfersError(null);
-            mutate();
+            void refreshManagerState();
         } catch (error) {
             console.error(error);
             setConfirmTransfersError(error instanceof Error ? error.message : 'Не удалось подтвердить переводы');
@@ -1294,15 +1477,15 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
         setIsCancellingBooking(true);
         try {
-            await request(`/api/rooms/${bookingDetails.roomId}/stay`, {
+            await sendManagerRequest(`/api/rooms/${bookingDetails.roomId}/stay`, {
                 body: {
                     intent: 'cancel-booking',
                     stayId: bookingDetails.stay.id,
                 }
-            });
+            }, 'Отмена брони');
             toast('Бронь отменена', 'success');
             setBookingDetails(null);
-            mutate();
+            void refreshManagerState();
         } catch (error) {
             console.error(error);
             toast('Не удалось отменить бронь', 'error');
@@ -1319,12 +1502,12 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
         setUpdatingCleaningRoomId(room.id);
         try {
-            await request(`/api/rooms/${room.id}/cleaning`, {
+            await sendManagerRequest(`/api/rooms/${room.id}/cleaning`, {
                 method: 'PATCH',
                 body: { status: 'AVAILABLE' }
-            });
+            }, `Уборка № ${room.label}`);
             toast(`№ ${room.label} отмечен убранным`, 'success');
-            await mutate();
+            await refreshManagerState();
         } catch (error) {
             console.error(error);
             toast(error instanceof Error ? error.message : 'Не удалось обновить уборку', 'error');
@@ -1452,7 +1635,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
         setIsSubmittingPaymentAdjust(true);
         try {
-            await request(`/api/rooms/${paymentAdjust.roomId}/stay`, {
+            await sendManagerRequest(`/api/rooms/${paymentAdjust.roomId}/stay`, {
                 body: {
                     shiftId: data?.shift?.id,
                     stayId: paymentAdjust.stayId,
@@ -1461,11 +1644,11 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                     cardAmount: toMinor(cardValue),
                     onlineAmount: toMinor(onlineValue)
                 }
-            });
+            }, `Корректировка оплаты № ${paymentAdjust.roomLabel}`);
             toast('Суммы обновлены', 'success');
             setPaymentAdjust(null);
             setPaymentAdjustError(null);
-            mutate();
+            void refreshManagerState();
         } catch (error) {
             console.error(error);
             setPaymentAdjustError(error instanceof Error ? error.message : 'Не удалось обновить суммы');
@@ -1492,18 +1675,18 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
             setIsSubmittingCheckIn(true);
             try {
-                await request(`/api/rooms/${checkInModal.roomId}/stay`, {
+                await sendManagerRequest(`/api/rooms/${checkInModal.roomId}/stay`, {
                     body: {
                         shiftId: activeShiftId,
                         intent: 'transfer',
                         targetRoomId: checkInModal.targetRoomId,
                         transferNote: checkInModal.transferNote.trim() || undefined,
                     }
-                });
+                }, `Переселение № ${checkInModal.label}`);
                 setCheckInModal(null);
                 setCheckInError(null);
                 toast('Гость переселён', 'success');
-                mutate();
+                void refreshManagerState();
             } catch (modalError) {
                 console.error(modalError);
                 setCheckInError('Не удалось переселить гостя');
@@ -1585,7 +1768,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
         setIsSubmittingCheckIn(true);
         try {
-            await request(`/api/rooms/${checkInModal.roomId}/stay`, {
+            await sendManagerRequest(`/api/rooms/${checkInModal.roomId}/stay`, {
                 body: {
                     shiftId: checkInModal.mode === 'book' ? (cashMinor > 0 || cardMinor > 0 ? activeShiftId : undefined) : activeShiftId,
                     stayId: checkInModal.stayId,
@@ -1604,11 +1787,11 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                     cardAmount: cardMinor,
                     onlineAmount: onlineMinor
                 }
-            });
+            }, checkInModal.mode === 'book' ? `Бронь № ${checkInModal.label}` : checkInModal.mode === 'extend' ? `Продление № ${checkInModal.label}` : `Заселение № ${checkInModal.label}`);
             setCheckInModal(null);
             setCheckInError(null);
             toast(checkInModal.mode === 'book' ? 'Бронь создана' : checkInModal.mode === 'extend' ? 'Проживание продлено' : 'Гость заселён', 'success');
-            mutate();
+            void refreshManagerState();
         } catch (modalError) {
             console.error(modalError);
             setCheckInError(checkInModal.mode === 'book' ? 'Не удалось создать бронь' : checkInModal.mode === 'extend' ? 'Не удалось продлить проживание' : 'Не удалось заселить гостя');
@@ -1674,6 +1857,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                 <div className="flex justify-end">
                     <ExitButton />
                 </div>
+                <OfflineStatusBanner />
                 <Card>
                     <CardHeader title="Принять смену" />
                     <form className="space-y-3" onSubmit={handleOpenShift}>
@@ -1752,7 +1936,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             <ThemeToggle />
                                             <button
                                                 type="button"
-                                                onClick={() => mutate()}
+                                                onClick={() => void refreshManagerState()}
                                                 className={`rounded-xl p-1.5 text-slate-500 dark:text-white/40 transition hover:text-slate-700 dark:hover:text-white/70 ${isValidating ? 'animate-spin' : ''}`}
                                                 aria-label="Обновить"
                                             >
@@ -1761,6 +1945,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             <ExitButton />
                                         </div>
                                     </div>
+                                    <OfflineStatusBanner />
                                     <div className="grid grid-cols-2 gap-1.5 text-[11px] sm:grid-cols-5 sm:gap-2 sm:text-xs">
                                         <span className="min-w-0 rounded-xl border border-slate-200 bg-white px-2 py-1.5 leading-snug text-slate-700 shadow-sm dark:border-white/[0.055] dark:bg-white/[0.05] dark:text-white/50">Касса <span className="block break-words font-semibold text-light-text dark:text-white sm:inline">{formatKgs(shiftCashValue)}</span></span>
                                         <span className="min-w-0 rounded-xl border border-slate-200 bg-white px-2 py-1.5 leading-snug text-slate-700 shadow-sm dark:border-white/[0.055] dark:bg-white/[0.05] dark:text-white/50">Б/н <span className="block break-words font-semibold text-light-text dark:text-white sm:inline">{formatKgs(shiftCardValue)}</span></span>
