@@ -26,11 +26,13 @@ type ManagerRoomStay = {
     scheduledCheckOut: string;
     status: string;
     amountPaid?: number | null;
+    totalAmount?: number | null;
     paymentMethod?: 'CASH' | 'CARD' | null;
     cashPaid?: number | null;
     cardPaid?: number | null;
     onlinePaid?: number | null;
     bookingSource?: string | null;
+    bookingNumber?: string | null;
     mealPlan?: string[] | null;
     notes?: string | null;
 };
@@ -163,6 +165,8 @@ interface CheckInModalState {
     guestPhone: string;
     companyName: string;
     bookingSource: string;
+    bookingNumber: string;
+    totalAmount: string;
     mealPlan: string[];
     notes: string;
     targetRoomId: string;
@@ -177,10 +181,14 @@ interface CheckInModalState {
 }
 
 interface GroupCheckInState {
+    mode: 'checkin' | 'booking';
     guestName: string;
     guestCount: string;
+    bookingSource: string;
+    bookingNumber: string;
     checkIn: string;
     checkOut: string;
+    tariffAmount: string;
     totalAmount: string;
     paymentMode: 'CARD' | 'CASH' | 'PENDING_TRANSFER';
     mealPlan: string[];
@@ -557,6 +565,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                     const isOverdue = stay.status === 'CHECKED_IN' && isPastDate(stay.scheduledCheckOut, now);
                     const guestLabel = stay.guestName?.trim() || (stay.status === 'CHECKED_IN' ? 'Гость' : 'Бронь');
                     const detailLabel = [
+                        stay.bookingNumber?.trim() ? `№ ${stay.bookingNumber.trim()}` : null,
+                        stay.totalAmount != null ? `тариф ${formatKgs(stay.totalAmount)}` : null,
                         ...mealPlanLabels(stay.mealPlan),
                         stay.bookingSource?.trim(),
                         stay.companyName?.trim(),
@@ -579,7 +589,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
             return { room, items: itemsWithLanes, laneCount };
         });
-    }, [roomBoardRange, sortedRooms]);
+    }, [formatKgs, roomBoardRange, sortedRooms]);
 
     const roomBoardSections = useMemo(() => {
         const sections = new Map<string, {
@@ -705,9 +715,11 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         [pendingTransferRooms]
     );
 
+    const groupSelectableRooms = groupCheckIn?.mode === 'booking' ? sortedRooms : availableGroupRooms;
+
     const selectedGroupRooms = useMemo(
-        () => groupCheckIn ? availableGroupRooms.filter((room) => groupCheckIn.roomIds.includes(room.id)) : [],
-        [availableGroupRooms, groupCheckIn]
+        () => groupCheckIn ? groupSelectableRooms.filter((room) => groupCheckIn.roomIds.includes(room.id)) : [],
+        [groupSelectableRooms, groupCheckIn]
     );
 
     const groupTotalMinor = useMemo(() => {
@@ -951,8 +963,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             toast('Сначала откройте смену, чтобы сделать групповой заезд', 'error');
             return;
         }
-        if (!availableGroupRooms.length) {
-            toast('Нет свободных номеров для группового заезда', 'error');
+        if (!sortedRooms.length) {
+            toast('Нет номеров для групповой операции', 'error');
             return;
         }
 
@@ -960,10 +972,14 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         const endDate = new Date(startDate.getTime() + 12 * 60 * 60 * 1000);
 
         setGroupCheckIn({
+            mode: 'checkin',
             guestName: '',
             guestCount: '',
+            bookingSource: '',
+            bookingNumber: '',
             checkIn: formatDateInputValue(startDate),
             checkOut: formatDateInputValue(endDate),
+            tariffAmount: '',
             totalAmount: '',
             paymentMode: 'PENDING_TRANSFER',
             mealPlan: [],
@@ -1009,7 +1025,9 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         const scheduledCheckIn = parseInputValue(groupCheckIn.checkIn, hotelTz);
         const scheduledCheckOut = parseInputValue(groupCheckIn.checkOut, hotelTz);
         const totalValue = Number(groupCheckIn.totalAmount || 0);
+        const tariffValue = Number(groupCheckIn.tariffAmount || 0);
         const guestCount = groupCheckIn.guestCount ? Number(groupCheckIn.guestCount) : undefined;
+        const bookingNumber = groupCheckIn.bookingNumber.trim();
 
         if (!groupCheckIn.roomIds.length) {
             setGroupCheckInError('Выберите номера для группы');
@@ -1019,8 +1037,20 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             setGroupCheckInError('Проверьте даты заезда и выезда');
             return;
         }
-        if (!Number.isFinite(totalValue) || totalValue <= 0) {
-            setGroupCheckInError('Укажите общую сумму оплаты');
+        if (groupCheckIn.bookingSource.trim() && !bookingNumber) {
+            setGroupCheckInError('Укажите номер бронирования');
+            return;
+        }
+        if (!Number.isFinite(tariffValue) || tariffValue <= 0) {
+            setGroupCheckInError('Укажите общую сумму тарифа');
+            return;
+        }
+        if (!Number.isFinite(totalValue) || totalValue < 0 || (groupCheckIn.mode === 'checkin' && totalValue <= 0)) {
+            setGroupCheckInError(groupCheckIn.mode === 'booking' ? 'Проверьте сумму предоплаты' : 'Укажите общую сумму оплаты');
+            return;
+        }
+        if (totalValue > tariffValue) {
+            setGroupCheckInError(groupCheckIn.mode === 'booking' ? 'Предоплата не может быть больше тарифа' : 'Оплата не может быть больше тарифа');
             return;
         }
         if (guestCount !== undefined && (!Number.isInteger(guestCount) || guestCount <= 0)) {
@@ -1032,21 +1062,24 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         try {
             await request('/api/rooms/group-stay', {
                 body: {
-                    action: 'group-checkin',
+                    action: groupCheckIn.mode === 'booking' ? 'group-booking' : 'group-checkin',
                     hotelId: data.hotel.id,
                     shiftId: data.shift.id,
                     roomIds: groupCheckIn.roomIds,
                     guestName: groupCheckIn.guestName.trim() || undefined,
                     guestCount,
+                    bookingSource: data.hotel.usesExtranets ? groupCheckIn.bookingSource || undefined : undefined,
+                    bookingNumber,
                     scheduledCheckIn: scheduledCheckIn.toISOString(),
                     scheduledCheckOut: scheduledCheckOut.toISOString(),
+                    tariffAmount: toMinor(tariffValue),
                     totalAmount: toMinor(totalValue),
                     paymentMode: groupCheckIn.paymentMode,
                     mealPlan: groupCheckIn.mealPlan,
                     notes: groupCheckIn.notes.trim() || undefined,
                 },
             });
-            toast('Групповой заезд создан', 'success');
+            toast(groupCheckIn.mode === 'booking' ? 'Групповая бронь создана' : 'Групповой заезд создан', 'success');
             setGroupCheckIn(null);
             setGroupCheckInError(null);
             mutate();
@@ -1127,6 +1160,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: '',
             companyName: '',
             bookingSource: '',
+            bookingNumber: '',
+            totalAmount: '',
             mealPlan: [],
             notes: '',
             targetRoomId: '',
@@ -1167,6 +1202,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: '',
             companyName: '',
             bookingSource: '',
+            bookingNumber: '',
+            totalAmount: '',
             mealPlan: [],
             notes: '',
             targetRoomId: '',
@@ -1225,6 +1262,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: details.stay.guestPhone?.trim() || '',
             companyName: details.stay.companyName?.trim() || '',
             bookingSource: details.stay.bookingSource?.trim() || '',
+            bookingNumber: details.stay.bookingNumber?.trim() || '',
+            totalAmount: String((details.stay.totalAmount ?? 0) / 100 || ''),
             mealPlan: details.stay.mealPlan ?? [],
             notes: details.stay.notes?.trim() || '',
             targetRoomId: '',
@@ -1312,6 +1351,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: room.stay.guestPhone?.trim() || '',
             companyName: room.stay.companyName?.trim() || '',
             bookingSource: room.stay.bookingSource?.trim() || '',
+            bookingNumber: room.stay.bookingNumber?.trim() || '',
+            totalAmount: String((room.stay.totalAmount ?? 0) / 100 || ''),
             mealPlan: room.stay.mealPlan ?? [],
             notes: room.stay.notes?.trim() || '',
             targetRoomId: '',
@@ -1351,6 +1392,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             guestPhone: room.stay.guestPhone?.trim() || '',
             companyName: room.stay.companyName?.trim() || '',
             bookingSource: room.stay.bookingSource?.trim() || '',
+            bookingNumber: room.stay.bookingNumber?.trim() || '',
+            totalAmount: String((room.stay.totalAmount ?? 0) / 100 || ''),
             mealPlan: room.stay.mealPlan ?? [],
             notes: room.stay.notes?.trim() || '',
             targetRoomId: targetRoom.id,
@@ -1499,9 +1542,21 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         const cashValue = Number(checkInModal.cashAmount || 0);
         const cardValue = Number(checkInModal.cardAmount || 0);
         const onlineValue = Number(checkInModal.onlineAmount || 0);
+        const tariffValue = Number(checkInModal.totalAmount || 0);
+        const bookingNumber = checkInModal.bookingNumber.trim();
 
         if (!Number.isFinite(cashValue) || cashValue < 0 || !Number.isFinite(cardValue) || cardValue < 0 || !Number.isFinite(onlineValue) || onlineValue < 0) {
             setCheckInError('Сумма не может быть отрицательной или пустой');
+            return;
+        }
+
+        if ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && checkInModal.bookingSource.trim() && !bookingNumber) {
+            setCheckInError('Укажите номер бронирования');
+            return;
+        }
+
+        if ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (!Number.isFinite(tariffValue) || tariffValue <= 0)) {
+            setCheckInError('Укажите общую сумму тарифа');
             return;
         }
 
@@ -1518,6 +1573,15 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         const cashMinor = toMinor(cashValue);
         const cardMinor = toMinor(cardValue);
         const onlineMinor = toMinor(onlineValue);
+        const tariffMinor = toMinor(tariffValue);
+        const currentPaymentMinor = checkInModal.mode === 'checkin'
+            ? checkInModal.existingPaid + cashMinor + cardMinor + onlineMinor
+            : cashMinor + cardMinor + onlineMinor;
+
+        if ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && currentPaymentMinor > tariffMinor) {
+            setCheckInError(checkInModal.mode === 'book' ? 'Предоплата не может быть больше тарифа' : 'Оплата не может быть больше тарифа');
+            return;
+        }
 
         setIsSubmittingCheckIn(true);
         try {
@@ -1530,6 +1594,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                     guestPhone: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? checkInModal.guestPhone.trim() || undefined : undefined,
                     companyName: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? checkInModal.companyName.trim() || undefined : undefined,
                     bookingSource: (checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && data?.hotel.usesExtranets ? checkInModal.bookingSource || undefined : undefined,
+                    bookingNumber: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? bookingNumber : undefined,
+                    totalAmount: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? tariffMinor : undefined,
                     mealPlan: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? checkInModal.mealPlan : undefined,
                     notes: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? checkInModal.notes.trim() || undefined : undefined,
                     scheduledCheckIn: checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? scheduledCheckIn!.toISOString() : undefined,
@@ -1736,7 +1802,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             size="sm"
                                             variant="secondary"
                                             className="gap-1.5"
-                                            disabled={!hasOpenShift || !availableGroupRooms.length}
+                                            disabled={!hasOpenShift || !sortedRooms.length}
                                             onClick={showGroupCheckInModal}
                                         >
                                             <Users className="h-4 w-4" aria-hidden="true" />
@@ -1980,6 +2046,10 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             return segments.join(' · ') || null;
                                         })();
                                         const bookingSourceLabel = room.stay?.bookingSource?.trim() ? `источник ${room.stay.bookingSource.trim()}` : null;
+                                        const bookingNumberLabel = room.stay?.bookingNumber?.trim() ? `бронь № ${room.stay.bookingNumber.trim()}` : null;
+                                        const totalTariff = room.stay?.totalAmount ?? null;
+                                        const paidTotal = room.stay?.amountPaid ?? 0;
+                                        const remainingTotal = totalTariff != null ? Math.max(totalTariff - paidTotal, 0) : null;
                                         const contactLabel = [room.stay?.companyName?.trim(), room.stay?.guestPhone?.trim()].filter(Boolean).join(' · ');
                                         const roomMealLabels = mealPlanLabels(room.stay?.mealPlan);
 
@@ -2100,9 +2170,14 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                             </div>
                                                         ) : null}
                                                         <p className="break-words">{formatDateTime(room.stay.scheduledCheckIn, hotelTz)} - {isOverdue ? 'просрочено с ' : ''}{formatDateTime(room.stay.scheduledCheckOut, hotelTz)}</p>
-                                                        {room.stay.amountPaid != null && (
-                                                            <p className="break-words">{formatKgs(room.stay.amountPaid)}{paymentLabel ? ` · ${paymentLabel}` : ''}{bookingSourceLabel ? ` · ${bookingSourceLabel}` : ''}</p>
-                                                        )}
+                                                        {totalTariff != null ? (
+                                                            <p className="break-words">Тариф {formatKgs(totalTariff)} · оплачено {formatKgs(paidTotal)}{remainingTotal ? ` · остаток ${formatKgs(remainingTotal)}` : ''}</p>
+                                                        ) : room.stay.amountPaid != null ? (
+                                                            <p className="break-words">Оплачено {formatKgs(room.stay.amountPaid)}</p>
+                                                        ) : null}
+                                                        {(paymentLabel || bookingSourceLabel || bookingNumberLabel) ? (
+                                                            <p className="break-words">{[paymentLabel, bookingSourceLabel, bookingNumberLabel].filter(Boolean).join(' · ')}</p>
+                                                        ) : null}
                                                         {contactLabel ? <p className="break-words">{contactLabel}</p> : null}
                                                     </div>
                                                 )}
@@ -2578,6 +2653,33 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                 </div>
 
                                 <div className="space-y-3">
+                                    <div className="grid grid-cols-2 gap-2 rounded-xl border border-white/[0.08] bg-white/[0.04] p-1">
+                                        <button
+                                            type="button"
+                                            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg text-sm font-medium transition ${groupCheckIn.mode === 'checkin' ? 'bg-white text-slate-950 shadow-sm' : 'text-white/65 hover:bg-white/[0.06] hover:text-white'}`}
+                                            onClick={() => setGroupCheckIn((prev) => {
+                                                if (!prev) return prev;
+                                                const availableIds = new Set(availableGroupRooms.map((room) => room.id));
+                                                return {
+                                                    ...prev,
+                                                    mode: 'checkin',
+                                                    roomIds: prev.roomIds.filter((id) => availableIds.has(id)),
+                                                };
+                                            })}
+                                        >
+                                            <Users className="h-4 w-4" aria-hidden="true" />
+                                            Заезд
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg text-sm font-medium transition ${groupCheckIn.mode === 'booking' ? 'bg-white text-slate-950 shadow-sm' : 'text-white/65 hover:bg-white/[0.06] hover:text-white'}`}
+                                            onClick={() => setGroupCheckIn((prev) => prev ? { ...prev, mode: 'booking' } : prev)}
+                                        >
+                                            <CalendarPlus className="h-4 w-4" aria-hidden="true" />
+                                            Бронь
+                                        </button>
+                                    </div>
+
                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                                         <div className="sm:col-span-2">
                                             <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-guest-name">Название группы</label>
@@ -2599,6 +2701,50 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                 value={groupCheckIn.guestCount}
                                                 onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, guestCount: event.target.value } : prev)}
                                                 placeholder="13"
+                                                className="text-white"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {data?.hotel.usesExtranets && (data.hotel.extranetNames?.length ?? 0) > 0 && (
+                                        <div>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-booking-source">Источник брони</label>
+                                            <Select
+                                                id="group-booking-source"
+                                                value={groupCheckIn.bookingSource}
+                                                onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, bookingSource: event.target.value } : prev)}
+                                                className="text-white"
+                                            >
+                                                <option value="">Без экстранета / прямой заезд</option>
+                                                {(data.hotel.extranetNames ?? []).map((name) => (
+                                                    <option key={`group-booking-source-${name}`} value={name}>{name}</option>
+                                                ))}
+                                            </Select>
+                                        </div>
+                                    )}
+
+                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                        <div>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-booking-number">Номер брони</label>
+                                            <Input
+                                                id="group-booking-number"
+                                                value={groupCheckIn.bookingNumber}
+                                                onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, bookingNumber: event.target.value } : prev)}
+                                                placeholder="Booking #"
+                                                className="text-white"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-tariff">Общая сумма тарифа</label>
+                                            <Input
+                                                id="group-tariff"
+                                                type="number"
+                                                min="0"
+                                                step="0.01"
+                                                inputMode="decimal"
+                                                value={groupCheckIn.tariffAmount}
+                                                onChange={(event) => setGroupCheckIn((prev) => prev ? { ...prev, tariffAmount: event.target.value } : prev)}
+                                                placeholder="150000"
                                                 className="text-white"
                                             />
                                         </div>
@@ -2629,7 +2775,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                         <div>
-                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-total">Общая сумма</label>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-total">{groupCheckIn.mode === 'booking' ? 'Общая предоплата' : 'Общая сумма'}</label>
                                             <Input
                                                 id="group-total"
                                                 type="number"
@@ -2643,7 +2789,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             />
                                         </div>
                                         <div>
-                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-payment-mode">Оплата</label>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-payment-mode">{groupCheckIn.mode === 'booking' ? 'Способ предоплаты' : 'Оплата'}</label>
                                             <Select
                                                 id="group-payment-mode"
                                                 value={groupCheckIn.paymentMode}
@@ -2660,10 +2806,10 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     <div>
                                         <div className="mb-2 flex items-center justify-between gap-3">
                                             <label className="text-[11px] text-white/40">Номера</label>
-                                            <span className="text-[11px] text-white/35">{selectedGroupRooms.length} выбрано · {groupPerRoomMinor ? `${formatKgs(groupPerRoomMinor)} / номер` : 'сумма не указана'}</span>
+                                            <span className="text-[11px] text-white/35">{selectedGroupRooms.length} выбрано · {groupPerRoomMinor ? `${formatKgs(groupPerRoomMinor)} / номер` : groupCheckIn.mode === 'booking' ? 'без предоплаты' : 'сумма не указана'}</span>
                                         </div>
                                         <div className="grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-4">
-                                            {availableGroupRooms.map((room) => {
+                                            {groupSelectableRooms.map((room) => {
                                                 const checked = groupCheckIn.roomIds.includes(room.id);
                                                 return (
                                                     <label
@@ -2676,7 +2822,10 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                             onChange={() => toggleGroupRoom(room.id)}
                                                             className="accent-emerald-500"
                                                         />
-                                                        <span className="truncate">№ {room.label}</span>
+                                                        <span className="min-w-0 truncate">№ {room.label}</span>
+                                                        {groupCheckIn.mode === 'booking' && room.status !== 'AVAILABLE' ? (
+                                                            <span className="ml-auto shrink-0 text-[10px] text-white/35">занят</span>
+                                                        ) : null}
                                                     </label>
                                                 );
                                             })}
@@ -2718,7 +2867,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                         />
                                     </div>
 
-                                    {groupCheckIn.paymentMode === 'PENDING_TRANSFER' ? (
+                                    {groupCheckIn.paymentMode === 'PENDING_TRANSFER' && groupCheckIn.mode === 'checkin' ? (
                                         <p className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
                                             Сумма будет распределена по выбранным номерам и останется в ожидании. Когда перевод придёт, подтвердите его одной кнопкой в списке номеров.
                                         </p>
@@ -2727,7 +2876,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     {groupCheckInError && <p className="text-xs text-rose-300">{groupCheckInError}</p>}
 
                                     <Button type="button" className="w-full py-3" disabled={isSubmittingGroupCheckIn} onClick={handleGroupCheckIn}>
-                                        {isSubmittingGroupCheckIn ? 'Создаём...' : 'Создать групповой заезд'}
+                                        {isSubmittingGroupCheckIn ? 'Создаём...' : groupCheckIn.mode === 'booking' ? 'Создать групповую бронь' : 'Создать групповой заезд'}
                                     </Button>
                                 </div>
                             </div>
@@ -2776,7 +2925,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
                     {checkInModal && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-2 sm:p-4">
-                            <div className="w-full max-w-sm rounded-xl sm:rounded-2xl bg-ink p-3 sm:p-5 text-white shadow-2xl">
+                            <div className="max-h-[92dvh] w-full max-w-sm overflow-y-auto rounded-xl bg-ink p-3 text-white shadow-2xl sm:rounded-2xl sm:p-5">
                                 <div className="flex items-center justify-between mb-3">
                                     <h3 className="text-base font-semibold">
                                         {checkInModal.mode === 'book'
@@ -2897,6 +3046,39 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                             <option key={`modal-booking-source-${name}`} value={name}>{name}</option>
                                                         ))}
                                                     </Select>
+                                                </div>
+                                            )}
+                                            {(checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (
+                                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                                    <div>
+                                                        <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-booking-number">Номер брони</label>
+                                                        <Input
+                                                            id="modal-booking-number"
+                                                            type="text"
+                                                            value={checkInModal.bookingNumber}
+                                                            onChange={(event) =>
+                                                                setCheckInModal((prev) => (prev ? { ...prev, bookingNumber: event.target.value } : prev))
+                                                            }
+                                                            placeholder="Booking #"
+                                                            className="text-white"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-total-amount">Общая сумма тарифа</label>
+                                                        <Input
+                                                            id="modal-total-amount"
+                                                            type="number"
+                                                            step="0.01"
+                                                            inputMode="decimal"
+                                                            min="0"
+                                                            value={checkInModal.totalAmount}
+                                                            onChange={(event) =>
+                                                                setCheckInModal((prev) => (prev ? { ...prev, totalAmount: event.target.value } : prev))
+                                                            }
+                                                            placeholder="150000"
+                                                            className="text-white"
+                                                        />
+                                                    </div>
                                                 </div>
                                             )}
                                             {(checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (
@@ -3162,7 +3344,9 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                             <span>Заезд: <span className="text-white/75">{formatDateTime(item.stay.scheduledCheckIn, hotelTz)}</span></span>
                                                             <span>Выезд: <span className="text-white/75">{formatDateTime(item.stay.scheduledCheckOut, hotelTz)}</span></span>
                                                         </div>
-                                                        {(item.stay.amountPaid ?? 0) > 0 ? (
+                                                        {item.stay.totalAmount != null ? (
+                                                            <p className="mt-1 text-[11px] text-cyan-100/80">Тариф: {formatKgs(item.stay.totalAmount)} · оплачено {formatKgs(item.stay.amountPaid ?? 0)}</p>
+                                                        ) : (item.stay.amountPaid ?? 0) > 0 ? (
                                                             <p className="mt-1 text-[11px] text-emerald-200/80">Оплата: {formatKgs(item.stay.amountPaid)}</p>
                                                         ) : null}
                                                     </button>
@@ -3250,14 +3434,21 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             <p className="mt-1 text-xs font-medium text-white/80">{formatDateTime(bookingDetails.stay.scheduledCheckOut, hotelTz)}</p>
                                         </div>
                                     </div>
-                                    {(bookingDetails.stay.guestPhone || bookingDetails.stay.companyName || bookingDetails.stay.bookingSource) && (
+                                    {(bookingDetails.stay.guestPhone || bookingDetails.stay.companyName || bookingDetails.stay.bookingSource || bookingDetails.stay.bookingNumber) && (
                                         <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] px-3 py-2.5 text-white/75">
                                             {bookingDetails.stay.guestPhone ? <p>Телефон: <span className="text-white">{bookingDetails.stay.guestPhone}</span></p> : null}
                                             {bookingDetails.stay.companyName ? <p>Компания: <span className="text-white">{bookingDetails.stay.companyName}</span></p> : null}
                                             {bookingDetails.stay.bookingSource ? <p>Источник: <span className="text-white">{bookingDetails.stay.bookingSource}</span></p> : null}
+                                            {bookingDetails.stay.bookingNumber ? <p>Номер брони: <span className="text-white">{bookingDetails.stay.bookingNumber}</span></p> : null}
                                         </div>
                                     )}
-                                    {(bookingDetails.stay.amountPaid ?? 0) > 0 ? (
+                                    {bookingDetails.stay.totalAmount != null ? (
+                                        <div className="rounded-2xl border border-cyan-300/20 bg-cyan-400/10 px-3 py-2.5">
+                                            <p className="text-[11px] uppercase tracking-[0.18em] text-cyan-100/55">Тариф</p>
+                                            <p className="mt-1 text-sm font-semibold text-cyan-100">{formatKgs(bookingDetails.stay.totalAmount)}</p>
+                                            <p className="mt-0.5 text-xs text-cyan-100/65">Оплачено {formatKgs(bookingDetails.stay.amountPaid ?? 0)} · остаток {formatKgs(Math.max(bookingDetails.stay.totalAmount - (bookingDetails.stay.amountPaid ?? 0), 0))}</p>
+                                        </div>
+                                    ) : (bookingDetails.stay.amountPaid ?? 0) > 0 ? (
                                         <div className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 px-3 py-2.5">
                                             <p className="text-[11px] uppercase tracking-[0.18em] text-emerald-100/55">Предоплата</p>
                                             <p className="mt-1 text-sm font-semibold text-emerald-100">{formatKgs(bookingDetails.stay.amountPaid)}</p>

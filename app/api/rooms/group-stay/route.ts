@@ -6,7 +6,7 @@ import { prisma } from '@/lib/db';
 import { assertHotelAccess } from '@/lib/permissions';
 import { handleApiError } from '@/lib/server/errors';
 import { getSessionUser } from '@/lib/server/session';
-import { detectStayPaymentMethod, sumStayPayments } from '@/lib/stays';
+import { detectStayPaymentMethod, normalizeBookingSource, resolveBookingSource, sumStayPayments } from '@/lib/stays';
 import { normalizeMealPlan } from '@/lib/meal-plan';
 
 export const dynamic = 'force-dynamic';
@@ -18,9 +18,30 @@ const groupCheckInSchema = z.object({
     roomIds: z.array(z.string().cuid()).min(1).max(80),
     guestName: z.string().max(120).optional().nullable(),
     guestCount: z.number().int().positive().max(500).optional(),
+    bookingSource: z.string().max(80).optional().nullable(),
+    bookingNumber: z.string().max(80).optional().nullable(),
     scheduledCheckIn: z.string().datetime(),
     scheduledCheckOut: z.string().datetime(),
+    tariffAmount: z.number().int().positive(),
     totalAmount: z.number().int().positive(),
+    paymentMode: z.enum(['CASH', 'CARD', 'PENDING_TRANSFER']),
+    mealPlan: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER'])).max(3).optional(),
+    notes: z.string().max(500).optional().nullable(),
+});
+
+const groupBookingSchema = z.object({
+    action: z.literal('group-booking'),
+    hotelId: z.string().cuid(),
+    shiftId: z.string().cuid(),
+    roomIds: z.array(z.string().cuid()).min(1).max(80),
+    guestName: z.string().max(120).optional().nullable(),
+    guestCount: z.number().int().positive().max(500).optional(),
+    bookingSource: z.string().max(80).optional().nullable(),
+    bookingNumber: z.string().max(80).optional().nullable(),
+    scheduledCheckIn: z.string().datetime(),
+    scheduledCheckOut: z.string().datetime(),
+    tariffAmount: z.number().int().positive(),
+    totalAmount: z.number().int().min(0),
     paymentMode: z.enum(['CASH', 'CARD', 'PENDING_TRANSFER']),
     mealPlan: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER'])).max(3).optional(),
     notes: z.string().max(500).optional().nullable(),
@@ -33,7 +54,7 @@ const confirmTransferSchema = z.object({
     stayIds: z.array(z.string().cuid()).min(1).max(120),
 });
 
-const groupStaySchema = z.discriminatedUnion('action', [groupCheckInSchema, confirmTransferSchema]);
+const groupStaySchema = z.discriminatedUnion('action', [groupCheckInSchema, groupBookingSchema, confirmTransferSchema]);
 
 const normalizeOptionalText = (value?: string | null) => {
     const trimmed = value?.trim();
@@ -182,7 +203,10 @@ export async function POST(request: NextRequest) {
             return new NextResponse('Не все номера найдены', { status: 400 });
         }
 
-        const unavailableRoom = rooms.find((room) => room.status !== RoomStatus.AVAILABLE || room.currentStayId);
+        const isGroupBooking = payload.action === 'group-booking';
+        const unavailableRoom = !isGroupBooking
+            ? rooms.find((room) => room.status !== RoomStatus.AVAILABLE || room.currentStayId)
+            : null;
         if (unavailableRoom) {
             return new NextResponse(`Номер №${unavailableRoom.label} сейчас не свободен`, { status: 409 });
         }
@@ -201,9 +225,40 @@ export async function POST(request: NextRequest) {
             return new NextResponse(`На эти даты уже есть бронь или проживание в №${conflictingStay.room.label}`, { status: 409 });
         }
 
+        const hotel = await prisma.hotel.findUnique({
+            where: { id: payload.hotelId },
+            select: {
+                usesExtranets: true,
+                extranetNames: true,
+            },
+        });
+
+        if (!hotel) {
+            return new NextResponse('Точка не найдена', { status: 404 });
+        }
+
+        const normalizedBookingSource = normalizeBookingSource(payload.bookingSource);
+        const resolvedBookingSource = normalizedBookingSource
+            ? resolveBookingSource(normalizedBookingSource, hotel.extranetNames)
+            : null;
+
+        if (normalizedBookingSource && (!hotel.usesExtranets || !resolvedBookingSource)) {
+            return new NextResponse('Выбранный экстранет не настроен для этой точки', { status: 400 });
+        }
+
+        const bookingNumber = normalizeOptionalText(payload.bookingNumber);
+        if (resolvedBookingSource && !bookingNumber) {
+            return new NextResponse('Укажите номер бронирования', { status: 400 });
+        }
+
+        if (payload.totalAmount > payload.tariffAmount) {
+            return new NextResponse('Оплата не может быть больше общей суммы тарифа', { status: 400 });
+        }
+
         const groupRef = randomUUID();
         const portions = splitAmount(payload.totalAmount, rooms.length);
-        const guestName = normalizeOptionalText(payload.guestName) ?? 'Групповой заезд';
+        const tariffPortions = splitAmount(payload.tariffAmount, rooms.length);
+        const guestName = normalizeOptionalText(payload.guestName) ?? (isGroupBooking ? 'Групповая бронь' : 'Групповой заезд');
         const baseNote = [
             payload.guestCount ? `${payload.guestCount} чел.` : null,
             normalizeOptionalText(payload.notes),
@@ -215,6 +270,7 @@ export async function POST(request: NextRequest) {
 
             for (const [index, room] of rooms.entries()) {
                 const portion = portions[index] ?? 0;
+                const tariffPortion = tariffPortions[index] ?? 0;
                 const cashPaid = payload.paymentMode === 'CASH' ? portion : 0;
                 const cardPaid = payload.paymentMode === 'CARD' ? portion : 0;
                 const onlinePaid = payload.paymentMode === 'PENDING_TRANSFER' ? portion : 0;
@@ -226,12 +282,15 @@ export async function POST(request: NextRequest) {
                         shiftId: payload.shiftId,
                         scheduledCheckIn,
                         scheduledCheckOut,
-                        actualCheckIn: new Date(),
-                        status: StayStatus.CHECKED_IN,
+                        actualCheckIn: isGroupBooking ? null : new Date(),
+                        status: isGroupBooking ? StayStatus.SCHEDULED : StayStatus.CHECKED_IN,
                         guestName,
+                        bookingSource: resolvedBookingSource,
+                        bookingNumber,
                         mealPlan: normalizeMealPlan(payload.mealPlan),
                         notes: baseNote,
                         amountPaid: portion,
+                        totalAmount: tariffPortion,
                         paymentMethod: detectStayPaymentMethod({ cashPaid, cardPaid, onlinePaid }),
                         cashPaid,
                         cardPaid,
@@ -239,13 +298,15 @@ export async function POST(request: NextRequest) {
                     },
                 });
 
-                await tx.room.update({
-                    where: { id: room.id },
-                    data: {
-                        status: RoomStatus.OCCUPIED,
-                        currentStayId: stay.id,
-                    },
-                });
+                if (!isGroupBooking) {
+                    await tx.room.update({
+                        where: { id: room.id },
+                        data: {
+                            status: RoomStatus.OCCUPIED,
+                            currentStayId: stay.id,
+                        },
+                    });
+                }
 
                 const ledgerMethod =
                     payload.paymentMode === 'CASH'
@@ -254,7 +315,7 @@ export async function POST(request: NextRequest) {
                             ? PaymentMethod.CARD
                             : null;
 
-                if (ledgerMethod) {
+                if (ledgerMethod && portion > 0) {
                     await tx.cashEntry.create({
                         data: {
                             hotelId: payload.hotelId,
@@ -264,10 +325,10 @@ export async function POST(request: NextRequest) {
                             entryType: LedgerEntryType.CASH_IN,
                             method: ledgerMethod,
                             amount: portion,
-                            note: `Групповой заезд №${room.label}`,
+                            note: isGroupBooking ? `Предоплата группы №${room.label}` : `Групповой заезд №${room.label}`,
                             meta: {
                                 source: 'room_stay',
-                                kind: 'group_checkin',
+                                kind: isGroupBooking ? 'group_booking_prepayment' : 'group_checkin',
                                 groupRef,
                                 guestCount: payload.guestCount ?? null,
                                 roomId: room.id,

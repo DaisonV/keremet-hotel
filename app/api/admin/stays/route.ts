@@ -17,9 +17,11 @@ const createStaySchema = z.object({
     guestPhone: z.string().max(40).optional().nullable(),
     companyName: z.string().max(120).optional().nullable(),
     bookingSource: z.string().max(80).optional().nullable(),
+    bookingNumber: z.string().max(80).optional().nullable(),
     scheduledCheckIn: z.string().datetime(),
     scheduledCheckOut: z.string().datetime(),
     shiftId: z.string().cuid().optional().nullable(),
+    totalAmount: z.number().int().positive(),
     prepaymentAmount: z.number().int().min(0).optional(),
     prepaymentMethod: z.enum(['CASH', 'CARD', 'ONLINE']).optional().nullable(),
     mealPlan: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER'])).max(3).optional(),
@@ -75,6 +77,11 @@ export async function POST(request: NextRequest) {
             return new NextResponse('Выбранный экстранет не настроен для этой точки', { status: 400 });
         }
 
+        const bookingNumber = normalizeOptionalText(payload.bookingNumber);
+        if (resolvedBookingSource && !bookingNumber) {
+            return new NextResponse('Укажите номер бронирования', { status: 400 });
+        }
+
         const conflictingStay = await prisma.roomStay.findFirst({
             where: {
                 roomId: room.id,
@@ -93,6 +100,9 @@ export async function POST(request: NextRequest) {
         const prepaymentMethod = prepaymentAmount > 0 ? payload.prepaymentMethod : null;
         if (prepaymentAmount > 0 && !prepaymentMethod) {
             return new NextResponse('Укажите способ предоплаты', { status: 400 });
+        }
+        if (prepaymentAmount > payload.totalAmount) {
+            return new NextResponse('Предоплата не может быть больше общей суммы тарифа', { status: 400 });
         }
 
         const prepaymentCash = prepaymentMethod === 'CASH' ? prepaymentAmount : 0;
@@ -135,12 +145,14 @@ export async function POST(request: NextRequest) {
                     guestPhone: normalizeOptionalText(payload.guestPhone),
                     companyName: normalizeOptionalText(payload.companyName),
                     bookingSource: resolvedBookingSource,
+                    bookingNumber,
                     scheduledCheckIn,
                     scheduledCheckOut,
                     status: StayStatus.SCHEDULED,
                     mealPlan: normalizeMealPlan(payload.mealPlan),
                     notes: normalizeOptionalText(payload.notes),
                     amountPaid: prepaymentTotal,
+                    totalAmount: payload.totalAmount,
                     paymentMethod: detectStayPaymentMethod({
                         cashPaid: prepaymentCash,
                         cardPaid: prepaymentCard,

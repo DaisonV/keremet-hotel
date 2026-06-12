@@ -21,12 +21,14 @@ const staySchema = z.object({
     guestPhone: z.string().max(40).optional().nullable(),
     companyName: z.string().max(120).optional().nullable(),
     bookingSource: z.string().max(80).optional().nullable(),
+    bookingNumber: z.string().max(80).optional().nullable(),
     mealPlan: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER'])).max(3).optional(),
     notes: z.string().max(500).optional().nullable(),
     targetRoomId: z.string().cuid().optional(),
     transferNote: z.string().trim().max(300).optional().nullable(),
     scheduledCheckIn: z.string().datetime().optional(),
     scheduledCheckOut: z.string().datetime().optional(),
+    totalAmount: z.number().int().positive().optional(),
     amountPaid: z.number().int().positive().optional(),
     paymentMethod: z.nativeEnum(PaymentMethod).optional(),
     cashAmount: z.number().int().nonnegative().optional(),
@@ -127,9 +129,19 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
             const cashAmount = payload.cashAmount ?? 0;
             const cardAmount = payload.cardAmount ?? 0;
             const onlineAmount = payload.onlineAmount ?? 0;
+            const totalTariffAmount = payload.totalAmount ?? 0;
+            const bookingNumber = normalizeOptionalText(payload.bookingNumber);
 
             if (cashAmount < 0 || cardAmount < 0 || onlineAmount < 0) {
                 return new NextResponse('Сумма не может быть отрицательной', { status: 400 });
+            }
+
+            if (totalTariffAmount <= 0) {
+                return new NextResponse('Укажите общую сумму тарифа', { status: 400 });
+            }
+
+            if (resolvedBookingSource && !bookingNumber) {
+                return new NextResponse('Укажите номер бронирования', { status: 400 });
             }
 
             if ((cashAmount > 0 || cardAmount > 0) && (!shift || shift.status !== ShiftStatus.OPEN || shift.hotelId !== room.hotelId)) {
@@ -139,6 +151,10 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
             const totalAmount = sumStayPayments({ cashPaid: cashAmount, cardPaid: cardAmount, onlinePaid: onlineAmount });
             const detectedMethod = detectStayPaymentMethod({ cashPaid: cashAmount, cardPaid: cardAmount, onlinePaid: onlineAmount });
 
+            if (totalAmount > totalTariffAmount) {
+                return new NextResponse('Предоплата не может быть больше общей суммы тарифа', { status: 400 });
+            }
+
             const stay = await prisma.$transaction(async (tx) => {
                 const createdStay = await tx.roomStay.create({
                     data: {
@@ -146,6 +162,7 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                         hotelId: room.hotelId,
                         shiftId: cashAmount > 0 || cardAmount > 0 ? shift?.id : null,
                         bookingSource: resolvedBookingSource,
+                        bookingNumber,
                         scheduledCheckIn,
                         scheduledCheckOut,
                         status: StayStatus.SCHEDULED,
@@ -155,6 +172,7 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                         mealPlan: normalizeMealPlan(payload.mealPlan),
                         notes: normalizeOptionalText(payload.notes),
                         amountPaid: totalAmount,
+                        totalAmount: totalTariffAmount,
                         paymentMethod: detectedMethod,
                         cashPaid: cashAmount,
                         cardPaid: cardAmount,
@@ -410,6 +428,9 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
             const nextCashAmount = (scheduledStay?.cashPaid ?? 0) + cashAmount;
             const nextCardAmount = (scheduledStay?.cardPaid ?? 0) + cardAmount;
             const nextOnlineAmount = (scheduledStay?.onlinePaid ?? 0) + onlineAmount;
+            const nextTotalTariffAmount = payload.totalAmount ?? scheduledStay?.totalAmount ?? 0;
+            const nextBookingSource = resolvedBookingSource ?? scheduledStay?.bookingSource ?? null;
+            const nextBookingNumber = normalizeOptionalText(payload.bookingNumber) ?? scheduledStay?.bookingNumber ?? null;
             const totalAmount = sumStayPayments({
                 cashPaid: nextCashAmount,
                 cardPaid: nextCardAmount,
@@ -425,12 +446,25 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                 return new NextResponse('Укажите сумму оплаты (наличные, безналичные и/или на сайте)', { status: 400 });
             }
 
+            if (nextTotalTariffAmount <= 0) {
+                return new NextResponse('Укажите общую сумму тарифа', { status: 400 });
+            }
+
+            if (nextBookingSource && !nextBookingNumber) {
+                return new NextResponse('Укажите номер бронирования', { status: 400 });
+            }
+
+            if (totalAmount > nextTotalTariffAmount) {
+                return new NextResponse('Оплата не может быть больше общей суммы тарифа', { status: 400 });
+            }
+
             const stay = scheduledStay
                 ? await prisma.roomStay.update({
                     where: { id: scheduledStay.id },
                     data: {
                         shiftId: payload.shiftId,
                         bookingSource: resolvedBookingSource ?? scheduledStay.bookingSource,
+                        bookingNumber: nextBookingNumber,
                         scheduledCheckIn: payload.scheduledCheckIn ? new Date(payload.scheduledCheckIn) : scheduledStay.scheduledCheckIn,
                         scheduledCheckOut: payload.scheduledCheckOut ? new Date(payload.scheduledCheckOut) : scheduledStay.scheduledCheckOut,
                         status: StayStatus.CHECKED_IN,
@@ -441,6 +475,7 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                         mealPlan: payload.mealPlan !== undefined ? normalizeMealPlan(payload.mealPlan) : scheduledStay.mealPlan,
                         notes: normalizeOptionalText(payload.notes) ?? scheduledStay.notes,
                         amountPaid: totalAmount,
+                        totalAmount: nextTotalTariffAmount,
                         paymentMethod: detectedMethod,
                         cashPaid: nextCashAmount,
                         cardPaid: nextCardAmount,
@@ -453,6 +488,7 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                         shiftId: payload.shiftId,
                         hotelId: room.hotelId,
                         bookingSource: resolvedBookingSource,
+                        bookingNumber: nextBookingNumber,
                         scheduledCheckIn: payload.scheduledCheckIn ? new Date(payload.scheduledCheckIn) : new Date(),
                         scheduledCheckOut: payload.scheduledCheckOut
                             ? new Date(payload.scheduledCheckOut)
@@ -465,6 +501,7 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                         mealPlan: normalizeMealPlan(payload.mealPlan),
                         notes: normalizeOptionalText(payload.notes),
                         amountPaid: totalAmount,
+                        totalAmount: nextTotalTariffAmount,
                         paymentMethod: detectedMethod,
                         cashPaid: cashAmount,
                         cardPaid: cardAmount,

@@ -103,6 +103,7 @@ model RoomStay {
   guestPhone        String?        @map("guest_phone")
   companyName       String?        @map("company_name")
   bookingSource     String?        @map("booking_source")
+  bookingNumber     String?        @map("booking_number")
   scheduledCheckIn  DateTime
   scheduledCheckOut DateTime
   actualCheckIn     DateTime?
@@ -112,6 +113,7 @@ model RoomStay {
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
   amountPaid        Int?
+  totalAmount       Int?           @map("total_amount")
   paymentMethod     PaymentMethod?
   cashPaid          Int            @default(0)
   cardPaid          Int            @default(0)

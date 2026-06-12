@@ -282,11 +282,13 @@ export async function GET(request: NextRequest) {
                     scheduledCheckOut: stay.scheduledCheckOut,
                     status: stay.status,
                     amountPaid: stay.amountPaid,
+                    totalAmount: stay.totalAmount,
                     paymentMethod: stay.paymentMethod,
                     cashPaid: stay.cashPaid,
                     cardPaid: stay.cardPaid,
                     onlinePaid: stay.onlinePaid,
                     bookingSource: stay.bookingSource,
+                    bookingNumber: stay.bookingNumber,
                     mealPlan: stay.mealPlan,
                     notes: stay.notes
                 });

@@ -39,11 +39,13 @@ export async function GET(request: NextRequest) {
             actualCheckOut: Date | null;
             status: string;
             amountPaid: number | null;
+            totalAmount: number | null;
             paymentMethod: string | null;
             cashPaid: number | null;
             cardPaid: number | null;
             onlinePaid: number;
             bookingSource: string | null;
+            bookingNumber: string | null;
             room?: { label: string } | null;
         };
 
@@ -105,11 +107,13 @@ export async function GET(request: NextRequest) {
             actualCheckOut: true,
             status: true,
             amountPaid: true,
+            totalAmount: true,
             paymentMethod: true,
             cashPaid: true,
             cardPaid: true,
             onlinePaid: true,
             bookingSource: true,
+            bookingNumber: true,
             room: { select: { label: true } },
         } as const;
 
@@ -329,11 +333,13 @@ export async function GET(request: NextRequest) {
                 actualCheckOut: s.actualCheckOut?.toISOString() ?? null,
                 status: s.status,
                 amountPaid: s.amountPaid,
+                totalAmount: s.totalAmount,
                 paymentMethod: s.paymentMethod,
                 cashPaid: s.cashPaid,
                 cardPaid: s.cardPaid,
                 onlinePaid: s.onlinePaid,
                 bookingSource: s.bookingSource,
+                bookingNumber: s.bookingNumber,
             })),
             ledger: ledgerEntries.map((e) => ({
                 id: e.id,

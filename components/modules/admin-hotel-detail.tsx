@@ -41,11 +41,13 @@ interface RoomStayDetail {
     actualCheckIn?: string | null;
     actualCheckOut?: string | null;
     amountPaid?: number | null;
+    totalAmount?: number | null;
     paymentMethod?: string | null;
     cashPaid?: number | null;
     cardPaid?: number | null;
     onlinePaid?: number | null;
     bookingSource?: string | null;
+    bookingNumber?: string | null;
     shiftId?: string | null;
     shiftNumber?: number | null;
     shiftStatus?: ShiftStatusValue | null;
@@ -238,10 +240,12 @@ interface StayEditForm {
     cashPaid: number;
     cardPaid: number;
     onlinePaid: number;
+    totalAmount: number;
     totalPaid: number;
     paymentMethod: PaymentMethodValue;
     shiftId: string;
     bookingSource: string;
+    bookingNumber: string;
     notes: string;
 }
 
@@ -253,6 +257,8 @@ interface BookingCreateForm {
     scheduledCheckIn: string;
     scheduledCheckOut: string;
     bookingSource: string;
+    bookingNumber: string;
+    totalAmount: number;
     prepaymentAmount: number;
     prepaymentMethod: 'CASH' | 'CARD' | 'ONLINE';
     notes: string;
@@ -284,10 +290,12 @@ const createStayEditDefaults = (): StayEditForm => ({
     cashPaid: 0,
     cardPaid: 0,
     onlinePaid: 0,
+    totalAmount: 0,
     totalPaid: 0,
     paymentMethod: 'AUTO',
     shiftId: '',
     bookingSource: '',
+    bookingNumber: '',
     notes: ''
 });
 
@@ -299,6 +307,8 @@ const createBookingDefaults = (): BookingCreateForm => ({
     scheduledCheckIn: '',
     scheduledCheckOut: '',
     bookingSource: '',
+    bookingNumber: '',
+    totalAmount: 0,
     prepaymentAmount: 0,
     prepaymentMethod: 'CASH',
     notes: ''
@@ -948,6 +958,8 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                         span,
                         guestLabel,
                         detailLabel: [
+                            stay.bookingNumber?.trim() ? `№ ${stay.bookingNumber.trim()}` : null,
+                            stay.totalAmount != null ? `тариф ${formatMoney(stay.totalAmount, hotelCur)}` : null,
                             stay.bookingSource?.trim(),
                             stay.companyName?.trim(),
                             stay.guestPhone?.trim()
@@ -968,7 +980,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
 
             return { room, items: itemsWithLanes, laneCount };
         });
-    }, [bookingBoardRange, sortedRooms]);
+    }, [bookingBoardRange, hotelCur, sortedRooms]);
 
     const filteredRoomStayHistory = useMemo(() => {
         const query = stayHistoryQuery.trim().toLocaleLowerCase('ru-RU');
@@ -994,6 +1006,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                             stay.guestPhone,
                             stay.companyName,
                             stay.bookingSource,
+                            stay.bookingNumber,
                             stay.notes,
                             stay.shiftNumber ? `смена ${stay.shiftNumber}` : null,
                             stay.shiftManagerName,
@@ -1493,14 +1506,31 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
         const scheduledCheckIn = fromDateTimeInputValue(values.scheduledCheckIn);
         const scheduledCheckOut = fromDateTimeInputValue(values.scheduledCheckOut);
         const prepaymentAmount = Number.isFinite(values.prepaymentAmount) ? values.prepaymentAmount || 0 : 0;
+        const totalAmount = Number.isFinite(values.totalAmount) ? values.totalAmount || 0 : 0;
+        const bookingNumber = normalizeOptionalText(values.bookingNumber);
 
         if (!values.roomId || !scheduledCheckIn || !scheduledCheckOut) {
             toast('Выберите номер и даты брони', 'error');
             return;
         }
 
+        if (values.bookingSource.trim() && !bookingNumber) {
+            toast('Укажите номер бронирования', 'error');
+            return;
+        }
+
+        if (totalAmount <= 0) {
+            toast('Укажите общую сумму тарифа', 'error');
+            return;
+        }
+
         if (prepaymentAmount < 0) {
             toast('Сумма предоплаты не может быть отрицательной', 'error');
+            return;
+        }
+
+        if (prepaymentAmount > totalAmount) {
+            toast('Предоплата не может быть больше тарифа', 'error');
             return;
         }
 
@@ -1520,6 +1550,8 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                     scheduledCheckIn,
                     scheduledCheckOut,
                     bookingSource: data?.usesExtranets ? normalizeOptionalText(values.bookingSource) : undefined,
+                    bookingNumber,
+                    totalAmount: toMinor(totalAmount),
                     shiftId: prepaymentAmount > 0 && values.prepaymentMethod !== 'ONLINE' ? activeShiftId : undefined,
                     prepaymentAmount: toMinor(prepaymentAmount),
                     prepaymentMethod: prepaymentAmount > 0 ? values.prepaymentMethod : undefined,
@@ -1557,6 +1589,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
             cardPaid: (stay.cardPaid ?? 0) / 100,
             onlinePaid: (stay.onlinePaid ?? 0) / 100,
             totalPaid: (stayBreakdownTotal > 0 ? stayBreakdownTotal : stay.amountPaid ?? 0) / 100,
+            totalAmount: (stay.totalAmount ?? 0) / 100,
             paymentMethod:
                 (stay.onlinePaid ?? 0) > 0 && !(stay.cashPaid ?? 0) && !(stay.cardPaid ?? 0)
                     ? 'ONLINE'
@@ -1565,6 +1598,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                         : 'AUTO',
             shiftId: stay.shiftId ?? '',
             bookingSource: stay.bookingSource ?? '',
+            bookingNumber: stay.bookingNumber ?? '',
             notes: stay.notes ?? ''
         });
     };
@@ -1585,6 +1619,23 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
         const onlineMinor = toOptionalMinorValue(values.onlinePaid);
         const breakdownTotalMinor = (cashMinor ?? 0) + (cardMinor ?? 0) + (onlineMinor ?? 0);
         const totalMinor = breakdownTotalMinor > 0 ? breakdownTotalMinor : toOptionalMinorValue(values.totalPaid);
+        const totalAmountMinor = toOptionalMinorValue(values.totalAmount);
+        const bookingNumber = normalizeOptionalText(values.bookingNumber);
+
+        if ((values.status === 'SCHEDULED' || values.status === 'CHECKED_IN') && values.bookingSource.trim() && !bookingNumber) {
+            toast('Укажите номер бронирования', 'error');
+            return;
+        }
+
+        if ((values.status === 'SCHEDULED' || values.status === 'CHECKED_IN') && (!totalAmountMinor || totalAmountMinor <= 0)) {
+            toast('Укажите общую сумму тарифа', 'error');
+            return;
+        }
+
+        if ((totalMinor ?? 0) > (totalAmountMinor ?? 0) && (values.status === 'SCHEDULED' || values.status === 'CHECKED_IN')) {
+            toast('Оплата не может быть больше тарифа', 'error');
+            return;
+        }
 
         try {
             await request(`/api/admin/stays/${values.stayId}`, {
@@ -1603,9 +1654,11 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                     cardPaid: cardMinor,
                     onlinePaid: onlineMinor,
                     amountPaid: totalMinor,
+                    totalAmount: totalAmountMinor ?? undefined,
                     paymentMethod: values.paymentMethod === 'AUTO' || values.paymentMethod === 'ONLINE' ? null : values.paymentMethod,
                     shiftId: values.shiftId || null,
-                    bookingSource: data?.usesExtranets ? normalizeOptionalText(values.bookingSource) : undefined
+                    bookingSource: data?.usesExtranets ? normalizeOptionalText(values.bookingSource) : undefined,
+                    bookingNumber
                 }
             });
 
@@ -1992,6 +2045,8 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                         {pendingOnlineHistory.map((stay) => {
                                             const guestLabel = stay.guestName?.trim() || 'Гость';
                                             const detailLine = [
+                                                stay.bookingNumber?.trim() ? `бронь № ${stay.bookingNumber.trim()}` : null,
+                                                stay.totalAmount != null ? `тариф ${formatCurrency(stay.totalAmount)}` : null,
                                                 stay.bookingSource?.trim() ? `источник ${stay.bookingSource.trim()}` : null,
                                                 stay.companyName?.trim() ? `компания ${stay.companyName.trim()}` : null,
                                                 stay.guestPhone?.trim() ? `тел. ${stay.guestPhone.trim()}` : null,
@@ -2056,6 +2111,10 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                             (stay.onlinePaid ?? 0) > 0 ? `онлайн ${formatCurrency(stay.onlinePaid)}` : null
                                         ].filter(Boolean).join(' · ');
                                         const guestLabel = stay.guestName?.trim() || 'Гость';
+                                        const bookingContext = [
+                                            stay.bookingNumber?.trim() ? `бронь № ${stay.bookingNumber.trim()}` : null,
+                                            stay.totalAmount != null ? `тариф ${formatCurrency(stay.totalAmount)}` : null
+                                        ].filter(Boolean).join(' · ');
 
                                         return (
                                             <button
@@ -2074,6 +2133,9 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                 <p className="mt-1 text-sm font-semibold text-cyan-800 dark:text-cyan-100">
                                                     {formatCurrency(stay.amountPaid ?? 0)}{paymentParts ? ` · ${paymentParts}` : ''}
                                                 </p>
+                                                {bookingContext ? (
+                                                    <p className="mt-1 text-xs text-cyan-800/70 dark:text-cyan-50/55">{bookingContext}</p>
+                                                ) : null}
                                             </button>
                                         );
                                     })}
@@ -2539,7 +2601,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                     <>
                                                         <div className="mt-3 grid gap-2 md:grid-cols-[1fr_180px]">
                                                             <Input
-                                                                placeholder="Поиск: номер, гость, телефон, компания, источник"
+                                                                placeholder="Поиск: номер, гость, номер брони, телефон, компания, источник"
                                                                 value={stayHistoryQuery}
                                                                 onChange={(event) => setStayHistoryQuery(event.target.value)}
                                                             />
@@ -2610,6 +2672,8 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                                                     const onlinePortion = stayEntry.onlinePaid ?? 0;
                                                                                     const paymentBreakdownTotal = cashPortion + cardPortion + onlinePortion;
                                                                                     const displayAmount = paymentBreakdownTotal > 0 ? paymentBreakdownTotal : stayEntry.amountPaid;
+                                                                                    const tariffAmount = stayEntry.totalAmount ?? null;
+                                                                                    const remainingAmount = tariffAmount != null ? Math.max(tariffAmount - (displayAmount ?? 0), 0) : null;
                                                                                     const paymentLabel = (() => {
                                                                                         const segments: string[] = [];
                                                                                         if (cashPortion) segments.push(`нал ${formatCurrency(cashPortion)}`);
@@ -2620,6 +2684,7 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                                                         return segments.join(' · ') || undefined;
                                                                                     })();
                                                                                     const sourceLabel = stayEntry.bookingSource?.trim() ? `источник ${stayEntry.bookingSource.trim()}` : undefined;
+                                                                                    const bookingNumberLabel = stayEntry.bookingNumber?.trim() ? `бронь № ${stayEntry.bookingNumber.trim()}` : undefined;
                                                                                     const phoneLabel = stayEntry.guestPhone?.trim() ? `тел. ${stayEntry.guestPhone.trim()}` : undefined;
                                                                                     const companyLabel = stayEntry.companyName?.trim() ? `компания ${stayEntry.companyName.trim()}` : undefined;
                                                                                     const transferLabel = stayEntry.transfers?.length
@@ -2645,10 +2710,17 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                                                                             </div>
                                                                                             <p className="mt-0.5 text-[11px] text-slate-400 dark:text-white/40">
                                                                                                 {checkInLabel} — {checkOutLabel}
-                                                                                                {displayAmount != null && (
-                                                                                                    <> · {formatCurrency(displayAmount)}{paymentLabel ? ` · ${paymentLabel}` : ''}{sourceLabel ? ` · ${sourceLabel}` : ''}</>
+                                                                                                {tariffAmount != null ? (
+                                                                                                    <> · тариф {formatCurrency(tariffAmount)} · оплачено {formatCurrency(displayAmount ?? 0)}{remainingAmount ? ` · остаток ${formatCurrency(remainingAmount)}` : ''}</>
+                                                                                                ) : displayAmount != null && (
+                                                                                                    <> · оплачено {formatCurrency(displayAmount)}</>
                                                                                                 )}
                                                                                             </p>
+                                                                                            {(paymentLabel || sourceLabel || bookingNumberLabel) ? (
+                                                                                                <p className="mt-1 text-[11px] text-slate-500 dark:text-white/45">
+                                                                                                    {[paymentLabel, sourceLabel, bookingNumberLabel].filter(Boolean).join(' · ')}
+                                                                                                </p>
+                                                                                            ) : null}
                                                                                             {(phoneLabel || companyLabel || stayEntry.notes) ? (
                                                                                                 <p className="mt-1 text-[11px] text-slate-500 dark:text-white/45">
                                                                                                     {[companyLabel, phoneLabel, stayEntry.notes?.trim()].filter(Boolean).join(' · ')}
@@ -3012,6 +3084,23 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                 </div>
                                 <div className="grid gap-3 md:grid-cols-2">
                                     <div className="space-y-1">
+                                        <label className={modalLabelClass}>Номер брони</label>
+                                        <Input placeholder="Booking #" {...bookingCreateForm.register('bookingNumber')} />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className={modalLabelClass}>{`Общая сумма тарифа (${hotelCur || 'KZT'})`}</label>
+                                        <Input
+                                            type="number"
+                                            min="0"
+                                            step="0.01"
+                                            inputMode="decimal"
+                                            placeholder="150000"
+                                            {...bookingCreateForm.register('totalAmount', { valueAsNumber: true })}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="space-y-1">
                                         <label className={modalLabelClass}>Заезд</label>
                                         <Input type="datetime-local" step="60" {...bookingCreateForm.register('scheduledCheckIn')} />
                                     </div>
@@ -3130,6 +3219,21 @@ export const AdminHotelDetail = ({ hotelId }: AdminHotelDetailProps) => {
                                         </Select>
                                     </div>
                                 )}
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="space-y-1">
+                                        <label className={modalLabelClass}>Номер брони</label>
+                                        <Input placeholder="Booking #" {...stayEditForm.register('bookingNumber')} />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className={modalLabelClass}>{`Общая сумма тарифа (${hotelCur || 'KZT'})`}</label>
+                                        <Input
+                                            type="number"
+                                            step="0.01"
+                                            min="0"
+                                            {...stayEditForm.register('totalAmount', { valueAsNumber: true })}
+                                        />
+                                    </div>
+                                </div>
                                 <div className="grid gap-3 md:grid-cols-2">
                                     <div className="space-y-1">
                                         <label className={modalLabelClass}>Планируемый заезд</label>

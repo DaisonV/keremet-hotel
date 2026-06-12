@@ -189,6 +189,30 @@ BEGIN
     END IF;
 END $$;
 
+-- 8b. RoomStay: добавить номер брони и общую сумму тарифа (если нет)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'RoomStay' AND column_name = 'booking_number'
+    ) THEN
+        ALTER TABLE "RoomStay" ADD COLUMN "booking_number" TEXT;
+        RAISE NOTICE 'Added RoomStay.booking_number';
+    ELSE
+        RAISE NOTICE 'RoomStay.booking_number already exists — skipped';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'RoomStay' AND column_name = 'total_amount'
+    ) THEN
+        ALTER TABLE "RoomStay" ADD COLUMN "total_amount" INTEGER;
+        RAISE NOTICE 'Added RoomStay.total_amount';
+    ELSE
+        RAISE NOTICE 'RoomStay.total_amount already exists — skipped';
+    END IF;
+END $$;
+
 -- 9. StayTransfer: журнал переселений между комнатами (если нет)
 DO $$
 BEGIN
