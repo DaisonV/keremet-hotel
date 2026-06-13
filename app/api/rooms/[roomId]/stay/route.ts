@@ -16,7 +16,7 @@ export const dynamic = 'force-dynamic';
 const staySchema = z.object({
     shiftId: z.string().cuid().optional(),
     stayId: z.string().cuid().optional(),
-    intent: z.enum(['book', 'checkin', 'checkout', 'extend', 'transfer', 'cancel-booking', 'adjust-payments']),
+    intent: z.enum(['book', 'checkin', 'checkout', 'extend', 'transfer', 'cancel-booking', 'adjust-payments', 'edit-stay']),
     guestName: z.string().optional(),
     guestPhone: z.string().max(40).optional().nullable(),
     companyName: z.string().max(120).optional().nullable(),
@@ -242,6 +242,102 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
             });
 
             return NextResponse.json(cancelledStay);
+        }
+
+        if (payload.intent === 'edit-stay') {
+            if (!canEditStayPayments) {
+                return new NextResponse('Нет права редактировать бронь или проживание', { status: 403 });
+            }
+
+            if (!payload.stayId) {
+                return new NextResponse('Не указана бронь или проживание', { status: 400 });
+            }
+
+            if (!payload.scheduledCheckIn || !payload.scheduledCheckOut) {
+                return new NextResponse('Укажите даты заезда и выезда', { status: 400 });
+            }
+
+            const scheduledCheckIn = new Date(payload.scheduledCheckIn);
+            const scheduledCheckOut = new Date(payload.scheduledCheckOut);
+
+            if (Number.isNaN(scheduledCheckIn.getTime()) || Number.isNaN(scheduledCheckOut.getTime())) {
+                return new NextResponse('Некорректные даты брони или проживания', { status: 400 });
+            }
+
+            if (scheduledCheckOut <= scheduledCheckIn) {
+                return new NextResponse('Дата выезда должна быть позже даты заезда', { status: 400 });
+            }
+
+            const targetStay = await prisma.roomStay.findFirst({
+                where: {
+                    id: payload.stayId,
+                    roomId: room.id,
+                    hotelId: room.hotelId,
+                    status: { in: [StayStatus.SCHEDULED, StayStatus.CHECKED_IN] }
+                }
+            });
+
+            if (!targetStay) {
+                return new NextResponse('Бронь или проживание не найдено', { status: 404 });
+            }
+
+            const normalizedBookingSource = normalizeBookingSource(payload.bookingSource);
+            const resolvedBookingSource = normalizedBookingSource
+                ? resolveBookingSource(normalizedBookingSource, room.hotel.extranetNames)
+                : null;
+
+            if (normalizedBookingSource && (!room.hotel.usesExtranets || !resolvedBookingSource)) {
+                return new NextResponse('Выбранный экстранет не настроен для этой точки', { status: 400 });
+            }
+
+            const bookingNumber = normalizeOptionalText(payload.bookingNumber);
+            const totalTariffAmount = payload.totalAmount ?? 0;
+
+            if (resolvedBookingSource && !bookingNumber) {
+                return new NextResponse('Укажите номер бронирования', { status: 400 });
+            }
+
+            if (totalTariffAmount <= 0) {
+                return new NextResponse('Укажите общую сумму тарифа', { status: 400 });
+            }
+
+            if ((targetStay.amountPaid ?? 0) > totalTariffAmount) {
+                return new NextResponse('Оплата не может быть больше общей суммы тарифа', { status: 400 });
+            }
+
+            const conflictingStay = await prisma.roomStay.findFirst({
+                where: {
+                    id: { not: targetStay.id },
+                    roomId: room.id,
+                    hotelId: room.hotelId,
+                    status: { in: [StayStatus.SCHEDULED, StayStatus.CHECKED_IN] },
+                    scheduledCheckIn: { lt: scheduledCheckOut },
+                    scheduledCheckOut: { gt: scheduledCheckIn }
+                },
+                select: { id: true }
+            });
+
+            if (conflictingStay) {
+                return new NextResponse('На эти даты у номера уже есть бронь или проживание', { status: 409 });
+            }
+
+            const updatedStay = await prisma.roomStay.update({
+                where: { id: targetStay.id },
+                data: {
+                    guestName: normalizeOptionalText(payload.guestName),
+                    guestPhone: normalizeOptionalText(payload.guestPhone),
+                    companyName: normalizeOptionalText(payload.companyName),
+                    bookingSource: resolvedBookingSource,
+                    bookingNumber,
+                    scheduledCheckIn,
+                    scheduledCheckOut,
+                    totalAmount: totalTariffAmount,
+                    mealPlan: payload.mealPlan !== undefined ? normalizeMealPlan(payload.mealPlan) : targetStay.mealPlan,
+                    notes: normalizeOptionalText(payload.notes)
+                }
+            });
+
+            return NextResponse.json(updatedStay);
         }
 
         if (payload.intent === 'adjust-payments') {

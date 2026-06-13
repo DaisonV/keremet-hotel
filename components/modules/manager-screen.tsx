@@ -25,7 +25,7 @@ import {
     readManagerOfflineQueue,
     type OfflineOperation
 } from '@/lib/offline';
-import { ArrowRightLeft, Banknote, CalendarPlus, CheckCircle2, LogIn, LogOut, Sparkles, Users } from 'lucide-react';
+import { ArrowRightLeft, Banknote, CalendarPlus, CheckCircle2, LogIn, LogOut, Pencil, Sparkles, Users } from 'lucide-react';
 
 type ManagerRoomStay = {
     id: string;
@@ -167,7 +167,7 @@ interface ShiftHandoverForm {
 }
 
 interface CheckInModalState {
-    mode: 'book' | 'checkin' | 'extend' | 'transfer';
+    mode: 'book' | 'checkin' | 'extend' | 'transfer' | 'edit';
     stayId?: string;
     roomId: string;
     label: string;
@@ -1463,6 +1463,57 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         setCheckInError(null);
     };
 
+    const showEditStayModal = (room: ManagerStateResponse['rooms'][number], stay = room.stay) => {
+        if (!stay) {
+            toast('Нет брони или проживания для редактирования', 'error');
+            return;
+        }
+        if (!canEditStayPayments) {
+            toast('Редактирование доступно только менеджеру с правом исправлений', 'error');
+            return;
+        }
+
+        setCheckInModal({
+            mode: 'edit',
+            stayId: stay.id,
+            roomId: room.id,
+            label: room.label,
+            guestName: stay.guestName?.trim() || '',
+            guestPhone: stay.guestPhone?.trim() || '',
+            companyName: stay.companyName?.trim() || '',
+            bookingSource: stay.bookingSource?.trim() || '',
+            bookingNumber: stay.bookingNumber?.trim() || '',
+            totalAmount: String((stay.totalAmount ?? 0) / 100 || ''),
+            mealPlan: stay.mealPlan ?? [],
+            notes: stay.notes?.trim() || '',
+            targetRoomId: '',
+            transferNote: '',
+            checkIn: formatDateInputValue(new Date(stay.scheduledCheckIn)),
+            currentCheckOut: stay.status === 'CHECKED_IN' ? formatDateInputValue(new Date(stay.scheduledCheckOut)) : undefined,
+            checkOut: formatDateInputValue(new Date(stay.scheduledCheckOut)),
+            cashAmount: '',
+            cardAmount: '',
+            onlineAmount: '',
+            existingPaid: stay.amountPaid ?? 0
+        });
+        setBookingDetails(null);
+        setCheckInError(null);
+    };
+
+    const showEditBookingDetails = () => {
+        if (!bookingDetails) {
+            return;
+        }
+
+        const room = sortedRooms.find((candidate) => candidate.id === bookingDetails.roomId);
+        if (!room) {
+            toast('Номер не найден в текущем списке', 'error');
+            return;
+        }
+
+        showEditStayModal(room, bookingDetails.stay);
+    };
+
     const handleCancelBooking = async () => {
         if (!bookingDetails) {
             return;
@@ -1663,7 +1714,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         }
 
         const activeShiftId = data?.shift?.id;
-        if (checkInModal.mode !== 'book' && !activeShiftId) {
+        if (checkInModal.mode !== 'book' && checkInModal.mode !== 'edit' && !activeShiftId) {
             return;
         }
 
@@ -1700,12 +1751,12 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         const scheduledCheckIn = parseInputValue(checkInModal.checkIn, hotelTz);
         const scheduledCheckOut = parseInputValue(checkInModal.checkOut, hotelTz);
 
-        if (!scheduledCheckOut || ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && !scheduledCheckIn)) {
+        if (!scheduledCheckOut || ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book' || checkInModal.mode === 'edit') && !scheduledCheckIn)) {
             setCheckInError(checkInModal.mode === 'extend' ? 'Укажите корректную новую дату выезда' : 'Укажите корректные даты заезда и выезда');
             return;
         }
 
-        if (checkInModal.mode === 'checkin' || checkInModal.mode === 'book') {
+        if (checkInModal.mode === 'checkin' || checkInModal.mode === 'book' || checkInModal.mode === 'edit') {
             if (scheduledCheckOut <= scheduledCheckIn!) {
                 setCheckInError('Время выезда должно быть позже заселения');
                 return;
@@ -1733,12 +1784,12 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             return;
         }
 
-        if ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && checkInModal.bookingSource.trim() && !bookingNumber) {
+        if ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book' || checkInModal.mode === 'edit') && checkInModal.bookingSource.trim() && !bookingNumber) {
             setCheckInError('Укажите номер бронирования');
             return;
         }
 
-        if ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (!Number.isFinite(tariffValue) || tariffValue <= 0)) {
+        if ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book' || checkInModal.mode === 'edit') && (!Number.isFinite(tariffValue) || tariffValue <= 0)) {
             setCheckInError('Укажите общую сумму тарифа');
             return;
         }
@@ -1760,6 +1811,48 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         const currentPaymentMinor = checkInModal.mode === 'checkin'
             ? checkInModal.existingPaid + cashMinor + cardMinor + onlineMinor
             : cashMinor + cardMinor + onlineMinor;
+
+        if (checkInModal.mode === 'edit') {
+            if (!checkInModal.stayId) {
+                setCheckInError('Не удалось определить бронь или проживание');
+                return;
+            }
+            if (checkInModal.existingPaid > tariffMinor) {
+                setCheckInError('Оплата не может быть больше тарифа');
+                return;
+            }
+
+            setIsSubmittingCheckIn(true);
+            try {
+                await sendManagerRequest(`/api/rooms/${checkInModal.roomId}/stay`, {
+                    body: {
+                        intent: 'edit-stay',
+                        stayId: checkInModal.stayId,
+                        guestName: checkInModal.guestName.trim() || undefined,
+                        guestPhone: checkInModal.guestPhone.trim() || undefined,
+                        companyName: checkInModal.companyName.trim() || undefined,
+                        bookingSource: data?.hotel.usesExtranets ? checkInModal.bookingSource || undefined : undefined,
+                        bookingNumber,
+                        totalAmount: tariffMinor,
+                        mealPlan: checkInModal.mealPlan,
+                        notes: checkInModal.notes.trim() || undefined,
+                        scheduledCheckIn: scheduledCheckIn!.toISOString(),
+                        scheduledCheckOut: scheduledCheckOut.toISOString()
+                    }
+                }, `Редактирование № ${checkInModal.label}`);
+                setCheckInModal(null);
+                setCheckInError(null);
+                toast('Данные сохранены', 'success');
+                void refreshManagerState();
+            } catch (modalError) {
+                console.error(modalError);
+                setCheckInError(modalError instanceof Error ? modalError.message : 'Не удалось сохранить данные');
+            } finally {
+                setIsSubmittingCheckIn(false);
+            }
+
+            return;
+        }
 
         if ((checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && currentPaymentMinor > tariffMinor) {
             setCheckInError(checkInModal.mode === 'book' ? 'Предоплата не может быть больше тарифа' : 'Оплата не может быть больше тарифа');
@@ -1810,6 +1903,9 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         setActivePanel('shift');
         handleCloseProfile();
     };
+
+    const isStayDataModalMode = checkInModal?.mode === 'checkin' || checkInModal?.mode === 'book' || checkInModal?.mode === 'edit';
+    const showPaymentInputsInModal = Boolean(checkInModal && checkInModal.mode !== 'transfer' && checkInModal.mode !== 'edit');
 
     if (!primaryHotel) {
         return (
@@ -2188,13 +2284,17 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                                                 className={`z-10 m-1 min-w-0 rounded-xl border px-2 py-1.5 text-left text-[11px] leading-tight shadow-sm ${boardStatusClass(item.stay.status, item.isOverdue)}`}
                                                                                 style={{ gridColumn: `${item.startIndex + 2} / span ${item.span}`, gridRow: item.lane + 1 }}
                                                                                 title={[item.guestLabel, stayStatusLabel(item.stay.status), item.detailLabel, item.stay.notes?.trim()].filter(Boolean).join(' · ')}
-                                                                                onClick={() => {
-                                                                                    if (item.stay.status === 'CHECKED_IN') {
-                                                                                        showExtendModal(room);
-                                                                                    } else {
-                                                                                        showBookingDetails(room, item.stay);
-                                                                                    }
-                                                                                }}
+                                                                                 onClick={() => {
+                                                                                     if (item.stay.status === 'CHECKED_IN') {
+                                                                                         if (canEditStayPayments) {
+                                                                                             showEditStayModal(room, item.stay);
+                                                                                         } else {
+                                                                                             showExtendModal(room);
+                                                                                         }
+                                                                                     } else {
+                                                                                         showBookingDetails(room, item.stay);
+                                                                                     }
+                                                                                 }}
                                                                             >
                                                                                 <span className="block truncate font-semibold">{item.guestLabel}</span>
                                                                                 <span className="mt-0.5 block truncate opacity-80">{item.detailLabel || stayStatusLabel(item.stay.status)}</span>
@@ -2343,7 +2443,22 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                     )}
                                                 </div>
                                                 {room.stay && (
-                                                    <div className={`mt-1 space-y-1 text-[11px] leading-snug ${isOverdue ? 'text-rose-700 dark:text-rose-300' : 'text-slate-600 dark:text-white/45'}`}>
+                                                    <button
+                                                        type="button"
+                                                        className={`mt-1 block w-full space-y-1 rounded-xl px-2 py-1.5 text-left text-[11px] leading-snug transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300 dark:hover:bg-white/[0.06] ${isOverdue ? 'text-rose-700 dark:text-rose-300' : 'text-slate-600 dark:text-white/45'}`}
+                                                        onClick={() => {
+                                                            if (room.stay?.status === 'SCHEDULED') {
+                                                                showBookingDetails(room, room.stay);
+                                                                return;
+                                                            }
+                                                            if (canEditStayPayments) {
+                                                                showEditStayModal(room, room.stay);
+                                                            } else {
+                                                                showExtendModal(room);
+                                                            }
+                                                        }}
+                                                        title={room.stay.status === 'SCHEDULED' ? 'Открыть бронь' : 'Редактировать проживание'}
+                                                    >
                                                         <p className="break-words font-medium text-slate-800 dark:text-white/70">{guestLabel}</p>
                                                         {roomMealLabels.length ? (
                                                             <div className="flex flex-wrap gap-1">
@@ -2364,7 +2479,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                             <p className="break-words">{[paymentLabel, bookingSourceLabel, bookingNumberLabel].filter(Boolean).join(' · ')}</p>
                                                         ) : null}
                                                         {contactLabel ? <p className="break-words">{contactLabel}</p> : null}
-                                                    </div>
+                                                    </button>
                                                 )}
                                             </article>
                                         );
@@ -3119,7 +3234,9 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                 ? `Продление № ${checkInModal.label}`
                                                 : checkInModal.mode === 'transfer'
                                                     ? `Переселение из № ${checkInModal.label}`
-                                                    : `Заселение № ${checkInModal.label}`}
+                                                    : checkInModal.mode === 'edit'
+                                                        ? `Редактировать № ${checkInModal.label}`
+                                                        : `Заселение № ${checkInModal.label}`}
                                     </h3>
                                     <Button type="button" variant="ghost" size="sm" disabled={isSubmittingCheckIn} onClick={handleCloseModal}>
                                         ×
@@ -3131,17 +3248,17 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                         <Input
                                             id="modal-guest"
                                             type="text"
-                                            autoFocus={checkInModal.mode === 'checkin' || checkInModal.mode === 'book'}
+                                            autoFocus={isStayDataModalMode}
                                             placeholder="Имя гостя"
                                             value={checkInModal.guestName}
                                             onChange={(event) =>
                                                 setCheckInModal((prev) => (prev ? { ...prev, guestName: event.target.value } : prev))
                                             }
                                             className="text-white"
-                                            readOnly={checkInModal.mode !== 'checkin' && checkInModal.mode !== 'book'}
+                                            readOnly={!isStayDataModalMode}
                                         />
                                     </div>
-                                    {(checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (
+                                    {isStayDataModalMode && (
                                         <div className="grid grid-cols-2 gap-2">
                                             <div>
                                                 <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-guest-phone">Телефон</label>
@@ -3215,7 +3332,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     )}
                                     {checkInModal.mode !== 'transfer' && (
                                         <>
-                                            {(checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && data?.hotel.usesExtranets && (data.hotel.extranetNames?.length ?? 0) > 0 && (
+                                            {isStayDataModalMode && data?.hotel.usesExtranets && (data.hotel.extranetNames?.length ?? 0) > 0 && (
                                                 <div>
                                                     <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-booking-source">Источник брони</label>
                                                     <Select
@@ -3233,7 +3350,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                     </Select>
                                                 </div>
                                             )}
-                                            {(checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (
+                                            {isStayDataModalMode && (
                                                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                                     <div>
                                                         <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-booking-number">Номер брони</label>
@@ -3266,7 +3383,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                     </div>
                                                 </div>
                                             )}
-                                            {(checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (
+                                            {isStayDataModalMode && (
                                                 <div>
                                                     <p className="mb-2 text-[11px] text-white/40">Питание</p>
                                                     <div className="flex flex-wrap gap-2">
@@ -3290,7 +3407,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                     </div>
                                                 </div>
                                             )}
-                                            {(checkInModal.mode === 'checkin' || checkInModal.mode === 'book') && (
+                                            {isStayDataModalMode && (
                                                 <div>
                                                     <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-stay-notes">Комментарий</label>
                                                     <TextArea
@@ -3305,7 +3422,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                     />
                                                 </div>
                                             )}
-                                            {checkInModal.mode === 'checkin' || checkInModal.mode === 'book' ? (
+                                            {isStayDataModalMode ? (
                                                 <div className="grid grid-cols-2 gap-2">
                                                     <div>
                                                         <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-checkin">Заезд</label>
@@ -3367,59 +3484,61 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             {checkInModal.mode === 'extend' && (
                                                 <p className="text-[11px] text-white/45">Укажите новый выезд позже текущего. Доплату можно оставить нулевой, если продление без оплаты.</p>
                                             )}
-                                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                                                <div>
-                                                    <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-cash">{checkInModal.mode === 'book' ? 'Предоплата нал' : checkInModal.mode === 'extend' ? 'Доплата нал' : 'Наличные'}</label>
-                                                    <Input
-                                                        id="modal-cash"
-                                                        type="number"
-                                                        step="0.01"
-                                                        inputMode="decimal"
-                                                        value={checkInModal.cashAmount}
-                                                        onChange={(event) =>
-                                                            setCheckInModal((prev) =>
-                                                                prev ? { ...prev, cashAmount: event.target.value } : prev
-                                                            )
-                                                        }
-                                                        placeholder="0"
-                                                        className="text-white"
-                                                    />
+                                            {showPaymentInputsInModal ? (
+                                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                                    <div>
+                                                        <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-cash">{checkInModal.mode === 'book' ? 'Предоплата нал' : checkInModal.mode === 'extend' ? 'Доплата нал' : 'Наличные'}</label>
+                                                        <Input
+                                                            id="modal-cash"
+                                                            type="number"
+                                                            step="0.01"
+                                                            inputMode="decimal"
+                                                            value={checkInModal.cashAmount}
+                                                            onChange={(event) =>
+                                                                setCheckInModal((prev) =>
+                                                                    prev ? { ...prev, cashAmount: event.target.value } : prev
+                                                                )
+                                                            }
+                                                            placeholder="0"
+                                                            className="text-white"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-card">{checkInModal.mode === 'book' ? 'Предоплата б/н' : checkInModal.mode === 'extend' ? 'Доплата безнал' : 'Безнал'}</label>
+                                                        <Input
+                                                            id="modal-card"
+                                                            type="number"
+                                                            step="0.01"
+                                                            inputMode="decimal"
+                                                            value={checkInModal.cardAmount}
+                                                            onChange={(event) =>
+                                                                setCheckInModal((prev) =>
+                                                                    prev ? { ...prev, cardAmount: event.target.value } : prev
+                                                                )
+                                                            }
+                                                            placeholder="0"
+                                                            className="text-white"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-online">{checkInModal.mode === 'book' ? 'Предоплата сайт' : checkInModal.mode === 'extend' ? 'Доплата сайт' : 'На сайте'}</label>
+                                                        <Input
+                                                            id="modal-online"
+                                                            type="number"
+                                                            step="0.01"
+                                                            inputMode="decimal"
+                                                            value={checkInModal.onlineAmount}
+                                                            onChange={(event) =>
+                                                                setCheckInModal((prev) =>
+                                                                    prev ? { ...prev, onlineAmount: event.target.value } : prev
+                                                                )
+                                                            }
+                                                            placeholder="0"
+                                                            className="text-white"
+                                                        />
+                                                    </div>
                                                 </div>
-                                                <div>
-                                                    <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-card">{checkInModal.mode === 'book' ? 'Предоплата б/н' : checkInModal.mode === 'extend' ? 'Доплата безнал' : 'Безнал'}</label>
-                                                    <Input
-                                                        id="modal-card"
-                                                        type="number"
-                                                        step="0.01"
-                                                        inputMode="decimal"
-                                                        value={checkInModal.cardAmount}
-                                                        onChange={(event) =>
-                                                            setCheckInModal((prev) =>
-                                                                prev ? { ...prev, cardAmount: event.target.value } : prev
-                                                            )
-                                                        }
-                                                        placeholder="0"
-                                                        className="text-white"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-[11px] text-white/40 mb-1 block" htmlFor="modal-online">{checkInModal.mode === 'book' ? 'Предоплата сайт' : checkInModal.mode === 'extend' ? 'Доплата сайт' : 'На сайте'}</label>
-                                                    <Input
-                                                        id="modal-online"
-                                                        type="number"
-                                                        step="0.01"
-                                                        inputMode="decimal"
-                                                        value={checkInModal.onlineAmount}
-                                                        onChange={(event) =>
-                                                            setCheckInModal((prev) =>
-                                                                prev ? { ...prev, onlineAmount: event.target.value } : prev
-                                                            )
-                                                        }
-                                                        placeholder="0"
-                                                        className="text-white"
-                                                    />
-                                                </div>
-                                            </div>
+                                            ) : null}
                                         </>
                                     )}
                                     {checkInError && <p className="text-xs text-rose-300">{checkInError}</p>}
@@ -3429,7 +3548,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                         disabled={isSubmittingCheckIn}
                                         onClick={handleConfirmCheckIn}
                                     >
-                                        {isSubmittingCheckIn ? 'Сохраняем...' : checkInModal.mode === 'book' ? 'Поставить бронь' : checkInModal.mode === 'extend' ? 'Продлить' : checkInModal.mode === 'transfer' ? 'Переселить' : 'Заселить'}
+                                        {isSubmittingCheckIn ? 'Сохраняем...' : checkInModal.mode === 'book' ? 'Поставить бронь' : checkInModal.mode === 'extend' ? 'Продлить' : checkInModal.mode === 'transfer' ? 'Переселить' : checkInModal.mode === 'edit' ? 'Сохранить' : 'Заселить'}
                                     </Button>
                                 </div>
                             </div>
@@ -3662,7 +3781,16 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                                     <Button
                                         type="button"
-                                        className="sm:col-span-2"
+                                        variant="secondary"
+                                        disabled={!canEditStayPayments}
+                                        onClick={showEditBookingDetails}
+                                        className="gap-1.5"
+                                    >
+                                        <Pencil className="h-4 w-4" aria-hidden="true" />
+                                        Редактировать
+                                    </Button>
+                                    <Button
+                                        type="button"
                                         disabled={!hasOpenShift || isCancellingBooking || !canCheckInScheduledStay(bookingDetails.stay)}
                                         onClick={() => showScheduledCheckInModal(bookingDetails)}
                                     >
