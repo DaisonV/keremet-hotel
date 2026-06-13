@@ -41,6 +41,7 @@ type ManagerRoomStay = {
     cashPaid?: number | null;
     cardPaid?: number | null;
     onlinePaid?: number | null;
+    groupRef?: string | null;
     bookingSource?: string | null;
     bookingNumber?: string | null;
     mealPlan?: string[] | null;
@@ -191,7 +192,8 @@ interface CheckInModalState {
 }
 
 interface GroupCheckInState {
-    mode: 'checkin' | 'booking';
+    mode: 'checkin' | 'booking' | 'edit';
+    groupRef?: string;
     guestName: string;
     guestCount: string;
     bookingSource: string;
@@ -211,6 +213,7 @@ interface PaymentAdjustState {
     roomLabel: string;
     stayId: string;
     guestName: string;
+    totalAmount?: number | null;
     cashAmount: string;
     cardAmount: string;
     onlineAmount: string;
@@ -898,7 +901,11 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         [pendingTransferRooms]
     );
 
-    const groupSelectableRooms = groupCheckIn?.mode === 'booking' ? sortedRooms : availableGroupRooms;
+    const groupSelectableRooms = groupCheckIn?.mode === 'edit'
+        ? sortedRooms.filter((room) => groupCheckIn.roomIds.includes(room.id))
+        : groupCheckIn?.mode === 'booking'
+            ? sortedRooms
+            : availableGroupRooms;
 
     const selectedGroupRooms = useMemo(
         () => groupCheckIn ? groupSelectableRooms.filter((room) => groupCheckIn.roomIds.includes(room.id)) : [],
@@ -1175,6 +1182,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
     const toggleGroupRoom = (roomId: string) => {
         setGroupCheckIn((prev) => {
             if (!prev) return prev;
+            if (prev.mode === 'edit') return prev;
             const roomIds = prev.roomIds.includes(roomId)
                 ? prev.roomIds.filter((id) => id !== roomId)
                 : [...prev.roomIds, roomId];
@@ -1245,9 +1253,10 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         try {
             await sendManagerRequest('/api/rooms/group-stay', {
                 body: {
-                    action: groupCheckIn.mode === 'booking' ? 'group-booking' : 'group-checkin',
+                    action: groupCheckIn.mode === 'edit' ? 'edit-group' : groupCheckIn.mode === 'booking' ? 'group-booking' : 'group-checkin',
                     hotelId: data.hotel.id,
                     shiftId: data.shift.id,
+                    groupRef: groupCheckIn.mode === 'edit' ? groupCheckIn.groupRef : undefined,
                     roomIds: groupCheckIn.roomIds,
                     guestName: groupCheckIn.guestName.trim() || undefined,
                     guestCount,
@@ -1261,8 +1270,8 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                     mealPlan: groupCheckIn.mealPlan,
                     notes: groupCheckIn.notes.trim() || undefined,
                 },
-            }, groupCheckIn.mode === 'booking' ? 'Групповая бронь' : 'Групповой заезд');
-            toast(groupCheckIn.mode === 'booking' ? 'Групповая бронь создана' : 'Групповой заезд создан', 'success');
+            }, groupCheckIn.mode === 'edit' ? 'Редактирование группы' : groupCheckIn.mode === 'booking' ? 'Групповая бронь' : 'Групповой заезд');
+            toast(groupCheckIn.mode === 'edit' ? 'Групповая бронь сохранена' : groupCheckIn.mode === 'booking' ? 'Групповая бронь создана' : 'Групповой заезд создан', 'success');
             setGroupCheckIn(null);
             setGroupCheckInError(null);
             void refreshManagerState();
@@ -1514,6 +1523,59 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
         showEditStayModal(room, bookingDetails.stay);
     };
 
+    const showEditGroupBookingDetails = () => {
+        if (!bookingDetails?.stay.groupRef) {
+            showEditBookingDetails();
+            return;
+        }
+        if (!canEditStayPayments) {
+            toast('Редактирование доступно только менеджеру с правом исправлений', 'error');
+            return;
+        }
+
+        const groupRooms = sortedRooms
+            .map((room) => {
+                const stay = (room.stays ?? []).find((candidate) =>
+                    candidate.groupRef === bookingDetails.stay.groupRef &&
+                    candidate.status === 'SCHEDULED'
+                );
+                return stay ? { room, stay } : null;
+            })
+            .filter((item): item is { room: ManagerStateResponse['rooms'][number]; stay: ManagerRoomStay } => Boolean(item));
+
+        if (groupRooms.length < 2) {
+            showEditBookingDetails();
+            return;
+        }
+
+        const totalTariff = groupRooms.reduce((sum, item) => sum + (item.stay.totalAmount ?? 0), 0);
+        const totalPaid = groupRooms.reduce((sum, item) => sum + (item.stay.amountPaid ?? 0), 0);
+        const totalCash = groupRooms.reduce((sum, item) => sum + (item.stay.cashPaid ?? 0), 0);
+        const totalCard = groupRooms.reduce((sum, item) => sum + (item.stay.cardPaid ?? 0), 0);
+        const totalOnline = groupRooms.reduce((sum, item) => sum + (item.stay.onlinePaid ?? 0), 0);
+        const first = groupRooms[0].stay;
+        const cleanedNotes = first.notes?.replace(/\s*·?\s*Группа\s+[a-f0-9-]+/i, '').trim() ?? '';
+
+        setGroupCheckIn({
+            mode: 'edit',
+            groupRef: bookingDetails.stay.groupRef,
+            guestName: first.guestName?.trim() || '',
+            guestCount: '',
+            bookingSource: first.bookingSource?.trim() || '',
+            bookingNumber: first.bookingNumber?.trim() || '',
+            checkIn: formatDateInputValue(new Date(first.scheduledCheckIn)),
+            checkOut: formatDateInputValue(new Date(first.scheduledCheckOut)),
+            tariffAmount: String(totalTariff / 100 || ''),
+            totalAmount: String(totalPaid / 100 || ''),
+            paymentMode: totalOnline > 0 ? 'PENDING_TRANSFER' : totalCash > 0 && totalCard <= 0 ? 'CASH' : 'CARD',
+            mealPlan: first.mealPlan ?? [],
+            notes: cleanedNotes,
+            roomIds: groupRooms.map((item) => item.room.id),
+        });
+        setBookingDetails(null);
+        setGroupCheckInError(null);
+    };
+
     const handleCancelBooking = async () => {
         if (!bookingDetails) {
             return;
@@ -1658,10 +1720,34 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
             roomLabel: room.label,
             stayId: room.stay.id,
             guestName: room.stay.guestName?.trim() || 'Гость',
+            totalAmount: room.stay.totalAmount ?? null,
             cashAmount: String((room.stay.cashPaid ?? 0) / 100 || ''),
             cardAmount: String((room.stay.cardPaid ?? 0) / 100 || ''),
             onlineAmount: String((room.stay.onlinePaid ?? 0) / 100 || '')
         });
+        setPaymentAdjustError(null);
+    };
+
+    const showBookingPaymentAdjust = () => {
+        if (!bookingDetails) {
+            return;
+        }
+        if (!canEditStayPayments) {
+            toast('Корректировка доступна только менеджеру с правом исправлений', 'error');
+            return;
+        }
+
+        setPaymentAdjust({
+            roomId: bookingDetails.roomId,
+            roomLabel: bookingDetails.roomLabel,
+            stayId: bookingDetails.stay.id,
+            guestName: bookingDetails.stay.guestName?.trim() || 'Гость',
+            totalAmount: bookingDetails.stay.totalAmount ?? null,
+            cashAmount: String((bookingDetails.stay.cashPaid ?? 0) / 100 || ''),
+            cardAmount: String((bookingDetails.stay.cardPaid ?? 0) / 100 || ''),
+            onlineAmount: String((bookingDetails.stay.onlinePaid ?? 0) / 100 || '')
+        });
+        setBookingDetails(null);
         setPaymentAdjustError(null);
     };
 
@@ -1681,6 +1767,12 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
         if (cashValue === 0 && cardValue === 0 && onlineValue === 0) {
             setPaymentAdjustError('Укажите сумму оплаты');
+            return;
+        }
+
+        const nextPaymentTotal = toMinor(cashValue) + toMinor(cardValue) + toMinor(onlineValue);
+        if (typeof paymentAdjust.totalAmount === 'number' && nextPaymentTotal > paymentAdjust.totalAmount) {
+            setPaymentAdjustError('Оплата не может быть больше тарифа');
             return;
         }
 
@@ -2945,7 +3037,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                 <div className="mb-3 flex items-center justify-between gap-3">
                                     <div className="min-w-0">
                                         <p className="text-[11px] uppercase tracking-[0.22em] text-white/35">Группа</p>
-                                        <h3 className="mt-1 text-base font-semibold">Групповой заезд</h3>
+                                        <h3 className="mt-1 text-base font-semibold">{groupCheckIn.mode === 'edit' ? 'Редактировать группу' : 'Групповой заезд'}</h3>
                                     </div>
                                     <Button type="button" variant="ghost" size="sm" disabled={isSubmittingGroupCheckIn} onClick={() => setGroupCheckIn(null)}>
                                         ×
@@ -2953,6 +3045,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                 </div>
 
                                 <div className="space-y-3">
+                                    {groupCheckIn.mode !== 'edit' ? (
                                     <div className="grid grid-cols-2 gap-2 rounded-xl border border-white/[0.08] bg-white/[0.04] p-1">
                                         <button
                                             type="button"
@@ -2979,6 +3072,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             Бронь
                                         </button>
                                     </div>
+                                    ) : null}
 
                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                                         <div className="sm:col-span-2">
@@ -3075,7 +3169,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
 
                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                         <div>
-                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-total">{groupCheckIn.mode === 'booking' ? 'Общая предоплата' : 'Общая сумма'}</label>
+                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-total">{groupCheckIn.mode === 'checkin' ? 'Общая сумма' : 'Общая предоплата'}</label>
                                             <Input
                                                 id="group-total"
                                                 type="number"
@@ -3089,7 +3183,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             />
                                         </div>
                                         <div>
-                                            <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-payment-mode">{groupCheckIn.mode === 'booking' ? 'Способ предоплаты' : 'Оплата'}</label>
+                                             <label className="mb-1 block text-[11px] text-white/40" htmlFor="group-payment-mode">{groupCheckIn.mode === 'checkin' ? 'Оплата' : 'Способ предоплаты'}</label>
                                             <Select
                                                 id="group-payment-mode"
                                                 value={groupCheckIn.paymentMode}
@@ -3120,6 +3214,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                                             type="checkbox"
                                                             checked={checked}
                                                             onChange={() => toggleGroupRoom(room.id)}
+                                                            disabled={groupCheckIn.mode === 'edit'}
                                                             className="accent-emerald-500"
                                                         />
                                                         <span className="min-w-0 truncate">№ {room.label}</span>
@@ -3167,6 +3262,12 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                         />
                                     </div>
 
+                                    {groupCheckIn.mode === 'edit' ? (
+                                        <p className="rounded-xl border border-cyan-300/20 bg-cyan-400/10 px-3 py-2 text-xs text-cyan-100">
+                                            Состав номеров группы зафиксирован. Здесь меняются общие даты, тариф, предоплата и данные брони.
+                                        </p>
+                                    ) : null}
+
                                     {groupCheckIn.paymentMode === 'PENDING_TRANSFER' && groupCheckIn.mode === 'checkin' ? (
                                         <p className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
                                             Сумма будет распределена по выбранным номерам и останется в ожидании. Когда перевод придёт, подтвердите его одной кнопкой в списке номеров.
@@ -3176,7 +3277,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     {groupCheckInError && <p className="text-xs text-rose-300">{groupCheckInError}</p>}
 
                                     <Button type="button" className="w-full py-3" disabled={isSubmittingGroupCheckIn} onClick={handleGroupCheckIn}>
-                                        {isSubmittingGroupCheckIn ? 'Создаём...' : groupCheckIn.mode === 'booking' ? 'Создать групповую бронь' : 'Создать групповой заезд'}
+                                        {isSubmittingGroupCheckIn ? 'Сохраняем...' : groupCheckIn.mode === 'edit' ? 'Сохранить группу' : groupCheckIn.mode === 'booking' ? 'Создать групповую бронь' : 'Создать групповой заезд'}
                                     </Button>
                                 </div>
                             </div>
@@ -3778,31 +3879,49 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                     ) : null}
                                 </div>
 
-                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                <div className="grid grid-cols-4 gap-2">
                                     <Button
                                         type="button"
+                                        size="icon"
                                         variant="secondary"
                                         disabled={!canEditStayPayments}
-                                        onClick={showEditBookingDetails}
-                                        className="gap-1.5"
+                                        onClick={bookingDetails.stay.groupRef ? showEditGroupBookingDetails : showEditBookingDetails}
+                                        title={bookingDetails.stay.groupRef ? 'Редактировать группу' : 'Редактировать бронь'}
+                                        aria-label={bookingDetails.stay.groupRef ? 'Редактировать группу' : 'Редактировать бронь'}
                                     >
                                         <Pencil className="h-4 w-4" aria-hidden="true" />
-                                        Редактировать
                                     </Button>
                                     <Button
                                         type="button"
+                                        size="icon"
+                                        variant="secondary"
+                                        disabled={!canEditStayPayments}
+                                        onClick={showBookingPaymentAdjust}
+                                        title="Изменить предоплату"
+                                        aria-label="Изменить предоплату"
+                                    >
+                                        <Banknote className="h-4 w-4" aria-hidden="true" />
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        size="icon"
                                         disabled={!hasOpenShift || isCancellingBooking || !canCheckInScheduledStay(bookingDetails.stay)}
                                         onClick={() => showScheduledCheckInModal(bookingDetails)}
+                                        title="Заселить по брони"
+                                        aria-label="Заселить по брони"
                                     >
-                                        Заселить по брони
+                                        <LogIn className="h-4 w-4" aria-hidden="true" />
                                     </Button>
                                     <Button
                                         type="button"
+                                        size="icon"
                                         variant="danger"
                                         disabled={isCancellingBooking || !canEditStayPayments}
                                         onClick={handleCancelBooking}
+                                        title="Отменить бронь"
+                                        aria-label="Отменить бронь"
                                     >
-                                        {isCancellingBooking ? '...' : 'Отменить'}
+                                        {isCancellingBooking ? '...' : '×'}
                                     </Button>
                                 </div>
                                 {!canEditStayPayments ? (

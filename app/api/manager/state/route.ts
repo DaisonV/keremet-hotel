@@ -287,6 +287,7 @@ export async function GET(request: NextRequest) {
                     cashPaid: stay.cashPaid,
                     cardPaid: stay.cardPaid,
                     onlinePaid: stay.onlinePaid,
+                    groupRef: stay.groupRef,
                     bookingSource: stay.bookingSource,
                     bookingNumber: stay.bookingNumber,
                     mealPlan: stay.mealPlan,

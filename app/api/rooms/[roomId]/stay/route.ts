@@ -383,6 +383,10 @@ export async function POST(request: NextRequest, { params }: { params: { roomId:
                 return new NextResponse('Проживание не найдено', { status: 404 });
             }
 
+            if (targetStay.totalAmount != null && totalAmount > targetStay.totalAmount) {
+                return new NextResponse('Оплата не может быть больше общей суммы тарифа', { status: 400 });
+            }
+
             const adjustedStay = await prisma.$transaction(async (tx) => {
                 const linkedLedgerEntries = await tx.cashEntry.findMany({
                     where: {

@@ -119,12 +119,15 @@ model RoomStay {
   cardPaid          Int            @default(0)
   onlinePaid        Int            @default(0) @map("online_paid")
   mealPlan          String[]       @default([]) @map("meal_plan")
+  groupRef          String?        @map("group_ref")
   ledgerEntries     CashEntry[]
   currentRoom       Room?          @relation("RoomCurrentStay")
   hotel             Hotel          @relation(fields: [hotelId], references: [id])
   room              Room           @relation("RoomStayHistory", fields: [roomId], references: [id])
   shift             Shift?         @relation(fields: [shiftId], references: [id])
   transfers         StayTransfer[]
+
+  @@index([hotelId, groupRef])
 }
 
 model StayTransfer {

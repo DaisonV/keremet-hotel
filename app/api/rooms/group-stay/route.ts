@@ -54,7 +54,26 @@ const confirmTransferSchema = z.object({
     stayIds: z.array(z.string().cuid()).min(1).max(120),
 });
 
-const groupStaySchema = z.discriminatedUnion('action', [groupCheckInSchema, groupBookingSchema, confirmTransferSchema]);
+const editGroupSchema = z.object({
+    action: z.literal('edit-group'),
+    hotelId: z.string().cuid(),
+    shiftId: z.string().cuid(),
+    groupRef: z.string().uuid(),
+    roomIds: z.array(z.string().cuid()).min(1).max(80),
+    guestName: z.string().max(120).optional().nullable(),
+    guestCount: z.number().int().positive().max(500).optional(),
+    bookingSource: z.string().max(80).optional().nullable(),
+    bookingNumber: z.string().max(80).optional().nullable(),
+    scheduledCheckIn: z.string().datetime(),
+    scheduledCheckOut: z.string().datetime(),
+    tariffAmount: z.number().int().positive(),
+    totalAmount: z.number().int().min(0),
+    paymentMode: z.enum(['CASH', 'CARD', 'PENDING_TRANSFER']),
+    mealPlan: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER'])).max(3).optional(),
+    notes: z.string().max(500).optional().nullable(),
+});
+
+const groupStaySchema = z.discriminatedUnion('action', [groupCheckInSchema, groupBookingSchema, confirmTransferSchema, editGroupSchema]);
 
 const normalizeOptionalText = (value?: string | null) => {
     const trimmed = value?.trim();
@@ -203,6 +222,159 @@ export async function POST(request: NextRequest) {
             return new NextResponse('Не все номера найдены', { status: 400 });
         }
 
+        if (payload.action === 'edit-group') {
+            if (!canEditStayPayments) {
+                return new NextResponse('Нет права редактировать групповую бронь', { status: 403 });
+            }
+
+            const hotel = await prisma.hotel.findUnique({
+                where: { id: payload.hotelId },
+                select: {
+                    usesExtranets: true,
+                    extranetNames: true,
+                },
+            });
+
+            if (!hotel) {
+                return new NextResponse('Точка не найдена', { status: 404 });
+            }
+
+            const groupStays = await prisma.roomStay.findMany({
+                where: {
+                    hotelId: payload.hotelId,
+                    groupRef: payload.groupRef,
+                    status: StayStatus.SCHEDULED,
+                },
+                include: { room: true },
+                orderBy: { scheduledCheckIn: 'asc' },
+            });
+
+            if (groupStays.length < 2) {
+                return new NextResponse('Групповая бронь не найдена', { status: 404 });
+            }
+
+            const currentRoomIds = new Set(groupStays.map((stay) => stay.roomId));
+            if (uniqueRoomIds.length !== groupStays.length || uniqueRoomIds.some((roomId) => !currentRoomIds.has(roomId))) {
+                return new NextResponse('Изменение состава номеров группы пока недоступно. Создайте новую группу или отмените лишние брони отдельно.', { status: 400 });
+            }
+
+            const normalizedBookingSource = normalizeBookingSource(payload.bookingSource);
+            const resolvedBookingSource = normalizedBookingSource
+                ? resolveBookingSource(normalizedBookingSource, hotel.extranetNames)
+                : null;
+
+            if (normalizedBookingSource && (!hotel.usesExtranets || !resolvedBookingSource)) {
+                return new NextResponse('Выбранный экстранет не настроен для этой точки', { status: 400 });
+            }
+
+            const bookingNumber = normalizeOptionalText(payload.bookingNumber);
+            if (resolvedBookingSource && !bookingNumber) {
+                return new NextResponse('Укажите номер бронирования', { status: 400 });
+            }
+
+            if (payload.totalAmount > payload.tariffAmount) {
+                return new NextResponse('Оплата не может быть больше общей суммы тарифа', { status: 400 });
+            }
+
+            const conflictingStay = await prisma.roomStay.findFirst({
+                where: {
+                    id: { notIn: groupStays.map((stay) => stay.id) },
+                    roomId: { in: uniqueRoomIds },
+                    status: { in: [StayStatus.SCHEDULED, StayStatus.CHECKED_IN] },
+                    scheduledCheckIn: { lt: scheduledCheckOut },
+                    scheduledCheckOut: { gt: scheduledCheckIn },
+                },
+                include: { room: true },
+            });
+
+            if (conflictingStay) {
+                return new NextResponse(`На эти даты уже есть бронь или проживание в №${conflictingStay.room.label}`, { status: 409 });
+            }
+
+            const portions = splitAmount(payload.totalAmount, groupStays.length);
+            const tariffPortions = splitAmount(payload.tariffAmount, groupStays.length);
+            const guestName = normalizeOptionalText(payload.guestName) ?? 'Групповая бронь';
+            const baseNote = [
+                payload.guestCount ? `${payload.guestCount} чел.` : null,
+                normalizeOptionalText(payload.notes),
+                `Группа ${payload.groupRef.slice(0, 8)}`,
+            ].filter(Boolean).join(' · ');
+
+            const updated = await prisma.$transaction(async (tx) => {
+                const result = [];
+
+                for (const [index, stay] of groupStays.entries()) {
+                    const portion = portions[index] ?? 0;
+                    const tariffPortion = tariffPortions[index] ?? 0;
+                    const cashPaid = payload.paymentMode === 'CASH' ? portion : 0;
+                    const cardPaid = payload.paymentMode === 'CARD' ? portion : 0;
+                    const onlinePaid = payload.paymentMode === 'PENDING_TRANSFER' ? portion : 0;
+
+                    await tx.cashEntry.deleteMany({
+                        where: {
+                            stayId: stay.id,
+                            entryType: LedgerEntryType.CASH_IN,
+                        },
+                    });
+
+                    const updatedStay = await tx.roomStay.update({
+                        where: { id: stay.id },
+                        data: {
+                            guestName,
+                            bookingSource: resolvedBookingSource,
+                            bookingNumber,
+                            scheduledCheckIn,
+                            scheduledCheckOut,
+                            mealPlan: normalizeMealPlan(payload.mealPlan),
+                            notes: baseNote,
+                            amountPaid: portion,
+                            totalAmount: tariffPortion,
+                            paymentMethod: detectStayPaymentMethod({ cashPaid, cardPaid, onlinePaid }),
+                            cashPaid,
+                            cardPaid,
+                            onlinePaid,
+                        },
+                    });
+
+                    const ledgerMethod =
+                        payload.paymentMode === 'CASH'
+                            ? PaymentMethod.CASH
+                            : payload.paymentMode === 'CARD'
+                                ? PaymentMethod.CARD
+                                : null;
+
+                    if (ledgerMethod && portion > 0) {
+                        await tx.cashEntry.create({
+                            data: {
+                                hotelId: payload.hotelId,
+                                shiftId: payload.shiftId,
+                                managerId: shift.managerId ?? session.id,
+                                stayId: stay.id,
+                                entryType: LedgerEntryType.CASH_IN,
+                                method: ledgerMethod,
+                                amount: portion,
+                                note: `Предоплата группы №${stay.room.label}`,
+                                meta: {
+                                    source: 'room_stay',
+                                    kind: 'group_booking_prepayment',
+                                    groupRef: payload.groupRef,
+                                    guestCount: payload.guestCount ?? null,
+                                    roomId: stay.roomId,
+                                    stayId: stay.id,
+                                },
+                            },
+                        });
+                    }
+
+                    result.push(updatedStay);
+                }
+
+                return result;
+            });
+
+            return NextResponse.json({ success: true, groupRef: payload.groupRef, stays: updated });
+        }
+
         const isGroupBooking = payload.action === 'group-booking';
         const unavailableRoom = !isGroupBooking
             ? rooms.find((room) => room.status !== RoomStatus.AVAILABLE || room.currentStayId)
@@ -287,6 +459,7 @@ export async function POST(request: NextRequest) {
                         guestName,
                         bookingSource: resolvedBookingSource,
                         bookingNumber,
+                        groupRef,
                         mealPlan: normalizeMealPlan(payload.mealPlan),
                         notes: baseNote,
                         amountPaid: portion,
