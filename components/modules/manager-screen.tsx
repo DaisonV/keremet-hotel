@@ -586,7 +586,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                             type="button"
                             onClick={() => void flushOfflineOperations()}
                             disabled={isSyncingOffline}
-                            className="shrink-0 rounded-lg border border-current/20 px-2 py-1 font-semibold transition hover:bg-white/30 disabled:opacity-50"
+                            className="min-w-0 max-w-full shrink-0 rounded-lg border border-current/20 px-2 py-1 text-center font-semibold leading-tight break-words transition [overflow-wrap:anywhere] hover:bg-white/30 disabled:opacity-50"
                         >
                             {isSyncingOffline ? 'Синхронизация...' : 'Синхронизировать'}
                         </button>
@@ -687,7 +687,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                 <button
                     type="button"
                     onClick={handleOpenProfile}
-                    className="text-left text-base font-semibold text-white underline decoration-dotted decoration-white/40 underline-offset-4 transition hover:text-amber-200 focus:outline-none"
+                    className="min-w-0 text-left text-base font-semibold text-white underline decoration-dotted decoration-white/40 underline-offset-4 transition break-words [overflow-wrap:anywhere] hover:text-amber-200 focus:outline-none"
                 >
                     {managerName}
                 </button>
@@ -2064,7 +2064,7 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                         key={tab.id}
                                         type="button"
                                         onClick={() => setActivePanel(tab.id)}
-                                        className={`flex-1 rounded-lg px-3 py-1.5 transition-all ${activePanel === tab.id ? 'bg-blue-600 text-white shadow-sm dark:bg-white/[0.12] dark:text-white' : 'hover:bg-slate-100 hover:text-slate-950 dark:hover:bg-transparent dark:hover:text-white/70'
+                                        className={`min-w-0 flex-1 rounded-lg px-3 py-1.5 text-center leading-tight transition-all break-words [overflow-wrap:anywhere] ${activePanel === tab.id ? 'bg-blue-600 text-white shadow-sm dark:bg-white/[0.12] dark:text-white' : 'hover:bg-slate-100 hover:text-slate-950 dark:hover:bg-transparent dark:hover:text-white/70'
                                             }`}
                                     >
                                         {tab.label}
@@ -2105,14 +2105,14 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                         <div className="flex rounded-xl border border-slate-200 bg-white p-1 text-xs font-medium text-slate-700 shadow-sm dark:border-white/[0.055] dark:bg-white/[0.05] dark:text-white/50">
                                             <button
                                                 type="button"
-                                                className={`rounded-lg px-2.5 py-1 transition ${roomViewMode === 'cards' ? 'bg-blue-600 text-white shadow-sm dark:bg-white/[0.12] dark:text-white' : 'hover:bg-slate-100 hover:text-slate-950 dark:hover:bg-transparent dark:hover:text-white'}`}
+                                                className={`min-w-0 rounded-lg px-2.5 py-1 text-center leading-tight transition break-words [overflow-wrap:anywhere] ${roomViewMode === 'cards' ? 'bg-blue-600 text-white shadow-sm dark:bg-white/[0.12] dark:text-white' : 'hover:bg-slate-100 hover:text-slate-950 dark:hover:bg-transparent dark:hover:text-white'}`}
                                                 onClick={() => setRoomViewMode('cards')}
                                             >
                                                 Карточки
                                             </button>
                                             <button
                                                 type="button"
-                                                className={`rounded-lg px-2.5 py-1 transition ${roomViewMode === 'board' ? 'bg-blue-600 text-white shadow-sm dark:bg-white/[0.12] dark:text-white' : 'hover:bg-slate-100 hover:text-slate-950 dark:hover:bg-transparent dark:hover:text-white'}`}
+                                                className={`min-w-0 rounded-lg px-2.5 py-1 text-center leading-tight transition break-words [overflow-wrap:anywhere] ${roomViewMode === 'board' ? 'bg-blue-600 text-white shadow-sm dark:bg-white/[0.12] dark:text-white' : 'hover:bg-slate-100 hover:text-slate-950 dark:hover:bg-transparent dark:hover:text-white'}`}
                                                 onClick={() => setRoomViewMode('board')}
                                             >
                                                 Шахматка
@@ -2146,28 +2146,28 @@ export const ManagerScreen = ({ user, onLogout }: { user: SessionUser; onLogout?
                                             <div className="flex flex-wrap gap-1.5">
                                                 <button
                                                     type="button"
-                                                    className="inline-flex items-center gap-1 rounded-2xl border border-cyan-300 bg-cyan-50 px-2.5 py-1 text-[11px] font-medium text-cyan-900 transition hover:bg-cyan-100 dark:border-cyan-300/35 dark:bg-cyan-400/15 dark:text-cyan-100 dark:hover:bg-cyan-400/20"
+                                                    className="inline-flex min-w-0 max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-cyan-300 bg-cyan-50 px-2.5 py-1 text-center text-[11px] font-medium leading-tight text-cyan-900 transition break-words [overflow-wrap:anywhere] hover:bg-cyan-100 dark:border-cyan-300/35 dark:bg-cyan-400/15 dark:text-cyan-100 dark:hover:bg-cyan-400/20"
                                                     onClick={() => setBoardListPopup('scheduled')}
                                                 >
                                                     Бронь <span className="font-semibold">{boardScheduledItems.length}</span>
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    className="inline-flex items-center gap-1 rounded-2xl border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber/15 dark:bg-amber/15 dark:text-amber dark:hover:bg-amber/20"
+                                                    className="inline-flex min-w-0 max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-amber-200 bg-amber-50 px-2.5 py-1 text-center text-[11px] font-medium leading-tight text-amber-700 transition break-words [overflow-wrap:anywhere] hover:bg-amber-100 dark:border-amber/15 dark:bg-amber/15 dark:text-amber dark:hover:bg-amber/20"
                                                     onClick={() => setBoardListPopup('checkedIn')}
                                                 >
                                                     Заселён <span className="font-semibold">{boardCheckedInItems.length}</span>
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    className="inline-flex items-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-700 transition hover:bg-rose-100 dark:border-rose-500/15 dark:bg-rose-500/15 dark:text-rose-400 dark:hover:bg-rose-500/20"
+                                                    className="inline-flex min-w-0 max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-rose-200 bg-rose-50 px-2.5 py-1 text-center text-[11px] font-medium leading-tight text-rose-700 transition break-words [overflow-wrap:anywhere] hover:bg-rose-100 dark:border-rose-500/15 dark:bg-rose-500/15 dark:text-rose-400 dark:hover:bg-rose-500/20"
                                                     onClick={() => setBoardListPopup('overdue')}
                                                 >
                                                     Просрочено <span className="font-semibold">{boardOverdueItems.length}</span>
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    className="inline-flex items-center gap-1 rounded-2xl border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 transition hover:bg-slate-100 dark:border-white/[0.06] dark:bg-white/[0.04] dark:text-white/55 dark:hover:bg-white/[0.08]"
+                                                    className="inline-flex min-w-0 max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-slate-200 bg-white px-2.5 py-1 text-center text-[11px] font-medium leading-tight text-slate-600 transition break-words [overflow-wrap:anywhere] hover:bg-slate-100 dark:border-white/[0.06] dark:bg-white/[0.04] dark:text-white/55 dark:hover:bg-white/[0.08]"
                                                     onClick={() => setBoardListPopup('freeDates')}
                                                 >
                                                     Свободные даты <span className="font-semibold">{boardFreeDateItems.length}</span>

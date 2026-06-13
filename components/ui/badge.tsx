@@ -8,5 +8,9 @@ export const Badge = ({ label, tone = 'default' }: { label: string; tone?: 'succ
         danger: 'border border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/15 dark:bg-rose-500/15 dark:text-rose-400'
     };
 
-    return <span className={cn('inline-flex items-center rounded-2xl px-2.5 py-1 text-[11px] font-medium', toneClasses[tone])}>{label}</span>;
+    return (
+        <span className={cn('inline-flex min-w-0 max-w-full items-center rounded-2xl px-2.5 py-1 text-[11px] font-medium leading-tight break-words [overflow-wrap:anywhere]', toneClasses[tone])}>
+            {label}
+        </span>
+    );
 };

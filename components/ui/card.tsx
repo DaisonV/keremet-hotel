@@ -8,11 +8,11 @@ export const Card = ({ className, children, ...props }: HTMLAttributes<HTMLDivEl
 );
 
 export const CardHeader = ({ title, subtitle, actions }: { title: ReactNode; subtitle?: ReactNode; actions?: ReactNode }) => (
-    <div className="mb-3 flex items-center justify-between gap-3 sm:mb-4">
-        <div className="min-w-0">
-            {subtitle && <p className="text-[11px] uppercase tracking-widest text-slate-700 dark:text-white/40">{subtitle}</p>}
-            <h3 className="truncate text-base font-semibold text-light-text dark:text-white sm:text-lg">{title}</h3>
+    <div className="mb-3 flex flex-wrap items-start justify-between gap-3 sm:mb-4">
+        <div className="min-w-0 flex-1">
+            {subtitle && <p className="break-words text-[11px] uppercase tracking-widest text-slate-700 [overflow-wrap:anywhere] dark:text-white/40">{subtitle}</p>}
+            <h3 className="break-words text-base font-semibold leading-tight text-light-text [overflow-wrap:anywhere] dark:text-white sm:text-lg">{title}</h3>
         </div>
-        {actions}
+        {actions ? <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">{actions}</div> : null}
     </div>
 );

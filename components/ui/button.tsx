@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import type { ButtonHTMLAttributes } from 'react';
 
 const buttonStyles = cva(
-    'inline-flex min-w-0 items-center justify-center rounded-xl font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 focus-visible:ring-offset-1 focus-visible:ring-offset-light-bg dark:focus-visible:ring-amber/50 dark:focus-visible:ring-offset-night disabled:pointer-events-none disabled:opacity-40 active:scale-[0.985] sm:rounded-2xl',
+    'inline-flex min-w-0 max-w-full items-center justify-center rounded-xl text-center font-medium leading-tight transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 focus-visible:ring-offset-1 focus-visible:ring-offset-light-bg dark:focus-visible:ring-amber/50 dark:focus-visible:ring-offset-night disabled:pointer-events-none disabled:opacity-40 active:scale-[0.985] sm:rounded-2xl [&>svg]:shrink-0',
     {
         variants: {
             variant: {
@@ -15,9 +15,9 @@ const buttonStyles = cva(
                 danger: 'border border-rose-300 bg-rose-100 text-rose-800 hover:border-rose-400 hover:bg-rose-200 dark:border-rose-400/20 dark:bg-rose-500/12 dark:text-rose-300 dark:hover:bg-rose-500/18'
             },
             size: {
-                md: 'h-10 px-4 text-sm sm:h-11 sm:px-5',
-                sm: 'h-9 px-3.5 text-xs',
-                icon: 'h-10 w-10'
+                md: 'min-h-10 px-4 py-2 text-sm break-words [overflow-wrap:anywhere] sm:min-h-11 sm:px-5',
+                sm: 'min-h-9 px-3.5 py-1.5 text-xs break-words [overflow-wrap:anywhere]',
+                icon: 'h-10 w-10 shrink-0'
             }
         },
         defaultVariants: {
